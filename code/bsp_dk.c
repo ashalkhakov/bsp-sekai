@@ -3180,7 +3180,9 @@ bspFile_t *BSP_LoadDK( const bspFormat_t *format, const char *name, const void *
 			}
 			else
 			{
-				Q_strncpyz(out->shader, texinfo->image->name, sizeof( out->shader ) );
+				char customName[MAX_QPATH];
+				COM_StripExtension(texinfo->image->name, customName);
+				Q_strncpyz(out->shader, customName, sizeof( out->shader ) );
 			}
 		}
 	}
@@ -3326,7 +3328,6 @@ bspFile_t *BSP_LoadDK( const bspFormat_t *format, const char *name, const void *
 						Com_Error( ERR_DROP, "MAX_FOGS on the map" );
 					fogs[numFogs].brushNum = brushNum;
 
-					//Q_strncpyz( fogs[numFogs].shader, "textures/sfx/fog_timdm1", sizeof( fogs[numFogs].shader ) );
 					sprintf( fogs[numFogs].shader, "fogs/%s_%d", mapname, k );
 
 					fogs[numFogs].visibleSide = 5; // 5 looks better than -1... but tesselation artifacts exist.

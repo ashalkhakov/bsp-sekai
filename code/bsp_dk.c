@@ -1818,13 +1818,13 @@ Damage: default is none
 static void dkent_effect_rain( entity_t *ent ) {
 	// NOTE: this is only for JKA
 	// TODO: add misc_weather_zone also!
-	SetKeyValue( ent, "classname", "fx_rain" );
+	//SetKeyValue( ent, "classname", "fx_rain" );
 
 	// TODO: the brushmodel needs to have CONTENTS_OUTSIDE
 	// - actually no. the leaves of the worldmodel have to be modified:
 	//   - add brushes of the submodel with CONTENTS_OUTSIDE to them.
 	//   - if these brushes are ONLY CONTENTS_OUTSIDE then we shouldn't break anything.
-	SetKeyValue( ent, "spawnflags", "1" ); // light
+	//SetKeyValue( ent, "spawnflags", "1" ); // light
 }
 
 static void dkent_worldspawn( const char *mapname, vec3_t worldMins, vec3_t worldMaxs, entity_t *ent )

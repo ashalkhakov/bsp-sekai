@@ -1680,7 +1680,9 @@ static void dkent_deco_e1( entity_t *ent )
 
 	RenameKeys( ent, sizeof( pairs ) / sizeof( *pairs ), pairs );
 
-	SetKeyValue( ent, "classname", "misc_model_breakable" );
+	// JKA: misc_model_breakable
+	// mint-arena: misc_gamemodel
+	SetKeyValue( ent, "classname", "misc_gamemodel" );
 
 	int		jkaSpawnFlags = 0;
 
@@ -1825,7 +1827,7 @@ static void dkent_effect_rain( entity_t *ent ) {
 	SetKeyValue( ent, "spawnflags", "1" ); // light
 }
 
-static void dkent_worldspawn( const char *mapname, entity_t *ent )
+static void dkent_worldspawn( const char *mapname, vec3_t worldMins, vec3_t worldMaxs, entity_t *ent )
 {
 	int			i;
 	mapMusic_t	*music;
@@ -1849,16 +1851,25 @@ static void dkent_worldspawn( const char *mapname, entity_t *ent )
 		break;
 	}
 
+	// 1. for atmospheric effects, need to generate tracemap
+	// 2. for tracemap, need world bounds
+
+	float mins[2] = { worldMins[0], worldMins[1] };
+	float maxs[2] = { worldMaxs[0], worldMaxs[1] };
+
+	SetKeyVector2D( ent, "mapcoordsmins", mins );
+	SetKeyVector2D( ent, "mapcoordsmaxs", maxs );
+
 	// ignore fog_value, fog_color, fog_start, fog_end
 	// JKA supports "global fog", does it not?
 }
 
-static void ProcessEntity( const char *mapname, int entityNum, entity_t *ent )
+static void ProcessEntity( const char *mapname, vec3_t worldMins, vec3_t worldMaxs, int entityNum, entity_t *ent )
 {
 	const char *className = ValueForKey(ent, "classname");
 
 	if (!strcmp(className, "worldspawn")) {
-		dkent_worldspawn( mapname, ent );
+		dkent_worldspawn( mapname, worldMins, worldMaxs, ent );
 	}
 	else if (!strcmp(className, "info_player_start")) {
 		// keep it
@@ -1930,7 +1941,7 @@ static void ProcessEntity( const char *mapname, int entityNum, entity_t *ent )
 	}
 }
 
-static void ConvertEntityString(const char *mapname, bspFile_t *bsp, const void *data, dheader_t *header, skybox_t *skybox)
+static void ConvertEntityString(const char *mapname, bspFile_t *bsp, const void *data, dheader_t *header, skybox_t *skybox, vec3_t worldMins, vec3_t worldMaxs)
 {
 	static char mapEntityString[MAX_MAP_ENTSTRING];
 	static int mapEntityStringSize;
@@ -1952,7 +1963,7 @@ static void ConvertEntityString(const char *mapname, bspFile_t *bsp, const void 
 
 	int numEntities = NumEntities();
 	for (int i = 0; i < numEntities; i++) {
-		ProcessEntity( mapname, i, GetEntityNum( i ) );
+		ProcessEntity( mapname, worldMins, worldMaxs, i, GetEntityNum( i ) );
 		// PrintEntity( GetEntityNum( i ) );
 	}
 	if ( numEntities >= 1)
@@ -2984,9 +2995,6 @@ bspFile_t *BSP_LoadDK( const bspFormat_t *format, const char *name, const void *
 	bsp->shaderStringLength = 0;
 	bsp->shaderString = NULL;
 
-	skybox_t skybox;
-	ConvertEntityString( mapname, bsp, data, &header, &skybox );
-
 	int		numFogs = 0;
 	#define MAX_FOGS 1024
 	mfog_t	fogs[MAX_FOGS];
@@ -3532,6 +3540,9 @@ bspFile_t *BSP_LoadDK( const bspFormat_t *format, const char *name, const void *
 			}
 		}
 	}
+
+	skybox_t skybox;
+	ConvertEntityString( mapname, bsp, data, &header, &skybox, bsp->submodels[0].mins, bsp->submodels[0].maxs );
 
 	OutputTexInfoShaders( mapname, faces, numFaces, texInfo, numTexInfo, &skybox, fogs, numFogs, bsp );
 

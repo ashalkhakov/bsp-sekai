@@ -600,6 +600,14 @@ void SetKeyFloat( entity_t *ent, const char *key, float floating ) {
 	SetKeyValue( ent, key, value );
 }
 
+void SetKeyVector2D( entity_t *ent, const char *key, float vec2d[2] ) {
+	char	value[MAX_VALUE];
+
+	sprintf( value, "%f %f", vec2d[0], vec2d[1] );
+	SetKeyValue( ent, key, value );
+}
+
+
 void RenameKeys( entity_t *ent, int numPairs, epair_t *pairs )
 {
 	epair_t	*ep, *kv;

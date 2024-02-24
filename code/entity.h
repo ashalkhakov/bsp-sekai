@@ -49,6 +49,7 @@ void	UnparseEntities( char *entdata, int *entdatasize, int maxMapEntString );
 void 	SetKeyValue( entity_t *ent, const char *key, const char *value );
 void	SetKeyInteger( entity_t *ent, const char *key, int value );
 void	SetKeyFloat( entity_t *ent, const char *key, float value );
+void	SetKeyVector2D( entity_t *ent, const char *key, float value[2] );
 
 void RenameKeys( entity_t *ent, int numPairs, epair_t *pairs );
 

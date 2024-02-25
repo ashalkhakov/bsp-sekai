@@ -60,7 +60,7 @@ void	AppendKeyValueMatching( entity_t *ent, const char *keyPrefix, const char *v
 
 int		IntegerForKey( const entity_t *ent, const char *key );
 float	FloatForKey( const entity_t *ent, const char *key );
-void 	GetVectorForKey( const entity_t *ent, const char *key, float vec[3] );
+int 	GetVectorForKey( const entity_t *ent, const char *key, float vec[3] );
 void	SetVectorForKey( entity_t *ent, const char *key, float vec[3] );
 
 epair_t *ParseEpair( void );

@@ -1104,6 +1104,10 @@ typedef struct {
 
 	float			height;
 
+	int				fogValue;
+	float			fogStart, fogEnd, fogSkyEnd;
+	float			fogColor[3];
+
 	skyboxLayer_t	layers[NUM_SKYBOX_LAYERS];
 } skybox_t;
 
@@ -1148,6 +1152,13 @@ static void SkyBoxPrint( const char *mapfilename, skybox_t *box, strbuf_t *strbu
 	sprintf( line, "\tskyparms - %f env/32bit/%s\n", box->height, box->sky );
 	AppendToBuffer( strbuf, line );
 
+	if ( box->fogValue ) {
+		float c = box->fogEnd - box->fogStart;
+
+		sprintf( line, "\tfogvars ( %f %f %f ) %f\n", box->fogColor[0], box->fogColor[1], box->fogColor[2], c );
+		AppendToBuffer( strbuf, line );
+	}
+
 	layer = box->layers;
 	for ( i = 0; i < NUM_SKYBOX_LAYERS ; i++, layer++ ) {
 		if ( !layer->used )
@@ -1191,31 +1202,42 @@ static void SkyboxFromEntity( skybox_t *box, entity_t *ent ) {
 	sky = ValueForKey( ent, "sky" );
 	cloudname = ValueForKey( ent, "cloudname" );
 
-	if ( !*sky )
-		return;
+	if ( *sky ) {
+		box->sky = copystring( sky );
 
-	box->sky = copystring( sky );
+		box->cloudxdir = FloatForKey( ent, "cloudxdir" );
+		box->cloudydir = FloatForKey( ent, "cloudydir" );
+		box->cloud1tile = FloatForKey( ent, "cloud1tile" );
+		box->cloud1speed = FloatForKey( ent, "cloud1speed" );
+		box->cloud2tile = FloatForKey( ent, "cloud2tile" );
+		box->cloud2speed = FloatForKey( ent, "cloud2speed" );
+		box->cloud2alpha = FloatForKey( ent, "cloud2alpha" );
 
-	box->cloudxdir = FloatForKey( ent, "cloudxdir" );
-	box->cloudydir = FloatForKey( ent, "cloudydir" );
-	box->cloud1tile = FloatForKey( ent, "cloud1tile" );
-	box->cloud1speed = FloatForKey( ent, "cloud1speed" );
-	box->cloud2tile = FloatForKey( ent, "cloud2tile" );
-	box->cloud2speed = FloatForKey( ent, "cloud2speed" );
-	box->cloud2alpha = FloatForKey( ent, "cloud2alpha" );
+		float timeval = 1.0f/256.0f;
+		box->height = SKY_BOX_SIZE * 0.5;
 
-	float timeval = 1.0f/256.0f;
-	box->height = SKY_BOX_SIZE * 0.5;
+		if ( *cloudname ) {
+			box->cloudname = copystring( cloudname );
 
-	if ( !*cloudname )
-		return;
+			SkyBoxSetupLayer( box, 0, 1, timeval * box->cloud1tile / box->cloud1speed, 1);
+			if ( box->cloud2alpha > 0 ) {
+				float alpha = (box->cloud2alpha < 1 ? box->cloud2alpha : 1);
+				SkyBoxSetupLayer( box, 1, box->cloud2tile/box->cloud1tile, timeval * box->cloud2tile/box->cloud2speed, alpha );
+			}
+		}
+	}
 
-	box->cloudname = copystring( cloudname );
-
-	SkyBoxSetupLayer( box, 0, 1, timeval * box->cloud1tile / box->cloud1speed, 1);
-	if ( box->cloud2alpha > 0 ) {
-		float alpha = (box->cloud2alpha < 1 ? box->cloud2alpha : 1);
-		SkyBoxSetupLayer( box, 1, box->cloud2tile/box->cloud1tile, timeval * box->cloud2tile/box->cloud2speed, alpha );
+	box->fogValue = IntegerForKey( ent, "fog_value" );
+	if ( box->fogValue ) {
+		box->fogStart = FloatForKey( ent, "fog_start" );
+		box->fogEnd = FloatForKey( ent, "fog_end" );
+		box->fogSkyEnd = FloatForKey( ent, "fog_skyend" );
+		if ( GetVectorForKey( ent, "fog_color", box->fogColor ) ) {
+			box->fogColor[0] *= 1.0f / 255.0f;
+			box->fogColor[1] *= 1.0f / 255.0f;
+			box->fogColor[2] *= 1.0f / 255.0f;
+		}
+		GetVectorForKey( ent, "_color", box->fogColor );
 	}
 }
 
@@ -1862,6 +1884,9 @@ static void dkent_worldspawn( const char *mapname, vec3_t worldMins, vec3_t worl
 
 	// ignore fog_value, fog_color, fog_start, fog_end
 	// JKA supports "global fog", does it not?
+
+	// let q3map2 know that light entities are left intact
+	SetKeyInteger( ent, "_keeplights", 1 );
 }
 
 static void ProcessEntity( const char *mapname, vec3_t worldMins, vec3_t worldMaxs, int entityNum, entity_t *ent )

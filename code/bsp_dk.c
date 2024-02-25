@@ -3260,25 +3260,29 @@ bspFile_t *BSP_LoadDK( const bspFormat_t *format, const char *name, const void *
 	bsp->brushes = malloc( bsp->numBrushes * sizeof( *bsp->brushes ) );
 	{
 		realDbrush_t	*in = GetLump( &header, data, LUMP_BRUSHES );
-		dbrush_t	*out;
+		dbrush_t		*out;
+		int				contents;
 
 		if (numBrushes > MAX_MAP_BRUSHES)
 			Com_Error (ERR_DROP, "Map has too many brushes");
 		out = bsp->brushes;
 		for (i=0 ; i<numBrushes ; i++, out++, in++)
 		{
-			out->firstSide = LittleLong(in->firstside);
-			out->numSides = LittleLong(in->numsides);
+			out->firstSide = LittleLong( in->firstside );
+			out->numSides = LittleLong( in->numsides );
 			
-			/*if (i >= 171 && i <= 174 || i == 262 || i == 561)
-			{
-				Com_Printf("found the fog brush\n");
+			contents = LittleLong( in->contents );
 
+			// HACK: for ladders. Q2/DK use contents for a ladder brush,
+			// but Q3 uses surface flags for that.
+			// the issue is that we should have already defined shaders at this point.
+			if ( contents & CONTENTS_LADDER ) {
 				for (j = 0; j < out->numSides; j++) {
 					dbrushside_t *side = &bsp->brushSides[ out->firstSide + j ];
+
+					bsp->shaders[side->shaderNum].surfaceFlags |= Q3_SURF_LADDER;
 				}
-			}*/
-			// j = DK_ContentsToQuake3 ( LittleLong(in->contents) );
+			}
 			
 			out->shaderNum = bsp->brushSides[out->firstSide].shaderNum;
 		}
@@ -3331,8 +3335,8 @@ bspFile_t *BSP_LoadDK( const bspFormat_t *format, const char *name, const void *
 
 			contents = LittleLong(in->contents);
 			// TODO: runtime switch for JKA
-			out->contents = DK_ContentsToJKA( contents );
-			//out->contents = DK_ContentsToQuake3( contents );
+			//out->contents = DK_ContentsToJKA( contents );
+			out->contents = DK_ContentsToQuake3( contents );
 
 			out->cluster = LittleShort(in->cluster);
 			out->area = LittleShort(in->area);

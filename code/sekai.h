@@ -78,6 +78,8 @@ char *COM_SkipPath( char *pathname );
 long FS_WriteFile( const char *filename, void *buf, long length );
 long FS_ReadFile( const char *filename, void **buffer );
 void FS_FreeFile( void *buffer );
+char **FS_ListFiles(const char *dir, const char *extension, int *numFiles);
+void FS_FreeFileList(char **files, int numFiles);
 
 // md4.c
 unsigned Com_BlockChecksum (const void *buffer, int length);

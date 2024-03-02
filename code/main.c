@@ -28,8 +28,11 @@ Suite 120, Rockville, Maryland 20850 USA.
 ===========================================================================
 */
 
+#include <dirent.h>
+#include <sys/stat.h>
 #include "sekai.h"
 #include "bsp.h"
+#include "shaders.h"
 
 // convert_nsco.c
 void ConvertNscoToNscoET( bspFile_t *bsp );
@@ -83,6 +86,9 @@ int main( int argc, char **argv ) {
 	formatName = argv[3];
 	outputFile = argv[4];
 
+	COM_StripExtension( outputFile, baseFile );
+	mapName = COM_SkipPath( baseFile );
+
 	if ( Q_stricmp( conversion, "none" ) == 0 ) {
 		convertFunc = NULL;
 	} else if ( Q_stricmp( conversion, "nsco2et" ) == 0 ) {
@@ -133,6 +139,9 @@ int main( int argc, char **argv ) {
 		return 1;
 	}
 
+	if ( outFormat->shaderDir && *outFormat->shaderDir ) {
+		InitShaders( outFormat->shaderDir, mapName );
+	}
 	bsp = BSP_Load( inputFile );
 
 	if ( !bsp ) {
@@ -153,8 +162,8 @@ int main( int argc, char **argv ) {
 		if ( saveData && FS_WriteFile( outputFile, saveData, saveLength ) == saveLength ) {
 			Com_Printf( "Saved BSP '%s' successfully.\n", outputFile );
 
-			COM_StripExtension( outputFile, baseFile );
-			mapName = COM_SkipPath( baseFile );
+			WriteShaders();
+			/*
 			sprintf( shaderOutputFile, "%s/%s_gen.shader", outFormat->shaderDir ? outFormat->shaderDir : "scripts", mapName );
 
 			if  ( bsp->shaderString && FS_WriteFile( shaderOutputFile, bsp->shaderString, bsp->shaderStringLength ) ) {
@@ -162,6 +171,7 @@ int main( int argc, char **argv ) {
 			} else {
 				Com_Printf( "Saving generated shaders to '%s' failed.\n", shaderOutputFile );
 			}
+			*/
 		} else {
 			Com_Printf( "Saving BSP '%s' failed.\n", outputFile );
 		}
@@ -232,4 +242,113 @@ void FS_FreeFile( void *buffer ) {
 	if ( buffer ) {
 		free( buffer );
 	}
+}
+
+static char *copystring(char *s)
+{
+	char	*b;
+	b = malloc( strlen(s) + 1 );
+	strcpy( b, s );
+	return b;
+}
+
+#define MAX_OSPATH 1024
+#define MAX_FOUND_FILES 4096
+
+char **FS_ListFiles( const char *directory, const char *extension, int *numFiles ) {
+	struct dirent *d;
+	DIR           *fdir;
+	char          search[MAX_OSPATH];
+	int           nfiles;
+	static char   *list[MAX_FOUND_FILES];
+	char		  **copyList;
+	int           i;
+	struct stat   st;
+	int			  dironly = 0;
+
+	int           extLen;
+
+	memset( list, 0, sizeof( list ) );
+
+	if ( !directory || directory[0] == '\0' ) {
+		*numFiles = 0;
+		return 0;
+	}
+
+	if ( !extension ) {
+		extension = "";
+	}
+
+	if ( extension[0] == '/' && extension[1] == 0 ) {
+		extension = "";
+		dironly = 1;
+	}
+
+	extLen = strlen( extension );
+
+	// search
+	nfiles = 0;
+
+	if ( ( fdir = opendir( directory ) ) == NULL ) {
+		*numFiles = 0;
+		return 0;
+	}
+
+	while ( ( d = readdir( fdir ) ) != NULL ) {
+		snprintf( search, sizeof(search), "%s/%s", directory, d->d_name );
+		if ( stat( search, &st ) == -1) {
+			continue;
+		}
+		if ( ( dironly && !( st.st_mode & S_IFDIR ) ) ||
+			( !dironly && ( st.st_mode & S_IFDIR ) ) ) {
+			continue;
+		}
+		if ( *extension ) {
+			if ( strlen( d->d_name ) < extLen ||
+				Q_stricmp(
+					d->d_name + strlen( d->d_name ) - extLen,
+					extension ) ) {
+				continue; // didn't match
+			}
+		}
+
+		if ( nfiles == MAX_FOUND_FILES - 1 ) {
+			break;
+		}
+		list[ nfiles ] = copystring( d->d_name );
+		nfiles++;
+	}
+
+	list[ nfiles ] = NULL;
+
+	closedir( fdir );
+
+	*numFiles = nfiles;
+
+	if ( !nfiles ) {
+		return NULL;
+	}
+
+	copyList = malloc( nfiles * sizeof(char*) );
+	for ( i = 0 ; i < nfiles ; i++ ) {
+		copyList[ i ] = list[ i ];
+	}
+
+	return copyList;
+}
+
+void FS_FreeFileList( char **list, int numFiles ) {
+	int i;
+
+	if ( !list || !numFiles ) {
+		return;
+	}
+
+	for ( i = 0 ; i < numFiles ; i++ ) {
+		if ( list[i] ) {
+			free( list[i] );
+			list[i] = 0;
+		}
+	}
+	free( list );
 }

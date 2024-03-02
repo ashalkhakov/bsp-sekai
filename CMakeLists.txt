@@ -26,6 +26,7 @@ set( BSP_SRCS
 	code/xbuf.c
 	code/entity.c
 	code/strbuf.c
+	code/shaders.c
 )
 
 add_executable(bspsekai ${BSP_SRCS})

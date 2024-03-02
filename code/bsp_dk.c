@@ -6,6 +6,7 @@
 #include "entity.h"
 #include <ctype.h> // tolower
 #include "strbuf.h"
+#include "shaders.h"
 
 #define IDBSPHEADER	(('P'<<24)+('S'<<16)+('B'<<8)+'I')
 		// little-endian "IBSP"
@@ -1137,53 +1138,50 @@ static void SkyBoxSetupLayer(skybox_t *box, int layerNum, float texscale, float 
 	layer->used = 1;
 }
 
-static void SkyBoxPrint( const char *mapfilename, skybox_t *box, strbuf_t *strbuf ) {
-	int		i;
-	int		len;
-	char	line[2048];
-	skyboxLayer_t *layer;
+static void SkyBoxPrint( skybox_t *box ) {
+	int					i;
+	skyboxLayer_t		*layer;
+	skyBoxShader_t		shader;
+	skyBoxShaderLayer_t	*outLayer;
+	float				fogColor[3], fogDist;
+	char				editorImage[MAX_QPATH];
 
-	sprintf( line, "textures/%s/sky\n", mapfilename );
-	AppendToBuffer( strbuf, line );
+	memset( &shader, 0, sizeof( shader ) );
 
-	sprintf( line, "{\n" "\tqer_editorimage env/32bit/%s_up.tga\n", box->sky );
-	AppendToBuffer( strbuf, line );
-	AppendToBuffer( strbuf, "\tsurfaceparm noimpact\n" "\tsurfaceparm nolightmap\n" "\tsurfaceparm sky\n");
-	sprintf( line, "\tskyparms - %f env/32bit/%s\n", box->height, box->sky );
-	AppendToBuffer( strbuf, line );
+	shader.height = box->height;
+	snprintf( shader.sky, sizeof( shader.sky ), "env/32bit/%s.tga", box->sky );
+	snprintf( editorImage, sizeof( editorImage ), "env/32bit/%s_up.tga", box->sky );
 
 	if ( box->fogValue ) {
 		float c = box->fogEnd - box->fogStart;
-
-		sprintf( line, "\tfogvars ( %f %f %f ) %f\n", box->fogColor[0], box->fogColor[1], box->fogColor[2], c );
-		AppendToBuffer( strbuf, line );
+		
+		fogDist = c;
+		fogColor[0] = box->fogColor[0];
+		fogColor[1] = box->fogColor[1];
+		fogColor[2] = box->fogColor[2];
+	} else {
+		fogDist = 0;
 	}
 
 	layer = box->layers;
-	for ( i = 0; i < NUM_SKYBOX_LAYERS ; i++, layer++ ) {
+	outLayer = shader.layers;
+	for ( i = 0; i < NUM_SKYBOX_LAYERS ; i++, layer++, outLayer++ ) {
 		if ( !layer->used )
 			continue;
 
-		AppendToBuffer( strbuf, "\t\t{\n" );
-		sprintf( line, "\t\t\tmap env/32bit/%s.tga\n", box->cloudname );
-		AppendToBuffer( strbuf, line );
+		shader.numLayers++;
 
-		if ( layer->alphaGenConst != 1) {
-			sprintf( line, "\t\t\talphaGen const %f\n", layer->alphaGenConst );
-			AppendToBuffer( strbuf, line );
-			AppendToBuffer( strbuf, "\t\t\tblendFunc GL_SRC_ALPHA GL_ONE_MINUS_SRC_ALPHA\n" );
-		}
-		//Com_Printf( "\t\t\trgbGen const ( %f %f %f )\n", layer->rgbGenConst[0], layer->rgbGenConst[1], layer->rgbGenConst[2] );
+		snprintf( outLayer->map, sizeof( outLayer->map ), "env/32bit/%s.tga", box->cloudname );
 
-		sprintf( line, "\t\t\ttcmod scale %f %f\n", layer->scale[0], layer->scale[1] );
-		AppendToBuffer( strbuf, line );
-		sprintf( line, "\t\t\ttcmod scroll %f %f\n", layer->scroll[0], layer->scroll[1] );
-		AppendToBuffer( strbuf, line );
+		outLayer->alphaGenConst = layer->alphaGenConst;
 
-		AppendToBuffer( strbuf, "\t\t}\n" );
+		outLayer->tcScale[0] = layer->scale[0];
+		outLayer->tcScale[1] = layer->scale[1];
+		outLayer->tcScroll[0] = layer->scroll[0];
+		outLayer->tcScroll[1] = layer->scroll[1];
 	}
 
-	AppendToBuffer( strbuf, "}\n" );
+	DefineSkyBoxShader( &shader, fogColor, fogDist, editorImage );
 }
 
 static void SkyBoxFree( skybox_t *box ) {
@@ -2147,7 +2145,7 @@ static long generateHashValue( const char *fname ) {
 	return hash;
 }
 
-static void OutputGeneratedFogShaders( const char *basename, mfog_t *fogs, int numFogs, strbuf_t *sb )
+static void OutputGeneratedFogShaders( mfog_t *fogs, int numFogs )
 {
 	int		i;
 	mfog_t	*fog;
@@ -2158,14 +2156,9 @@ static void OutputGeneratedFogShaders( const char *basename, mfog_t *fogs, int n
 		return;
 	}
 
-	for (i=0 ; i< numFogs ; i++)
+	for ( i = 0 ; i < numFogs ; i++ )
 	{
 		fog = &fogs[i];
-
-		sprintf (line, "%s\n", fog->shader);
-		AppendToBuffer( sb, line );
-
-		AppendToBuffer( sb, "{\n" );
 
 		float	color[3];
 		float	distance;
@@ -2180,15 +2173,42 @@ static void OutputGeneratedFogShaders( const char *basename, mfog_t *fogs, int n
 			distance = 128;
 		}
 
-		sprintf( line, "surfaceparm trans\nsurfaceparm nonsolid\nsurfaceparm fog\nsurfaceparm nolightmap\n" );
-		AppendToBuffer( sb, line );
-
-		sprintf(line, "fogparms ( %f %f %f ) %f\n",
-			fog->shader, color[0], color[1], color[2], distance);
-		AppendToBuffer( sb, line );
-
-		AppendToBuffer( sb, "}\n" );
+		DefineFogShader( fog->shader, color, distance );
 	}
+}
+
+static void PrintTexInfoSurfaceFlags(mtexinfo_t *texinfo)
+{
+		Com_Printf("%s ", texinfo->image->name );
+#define PRINTFLAG(f) do { if (texinfo->flags & (f)) Com_Printf( "%s ", #f ); } while (0)
+		PRINTFLAG(SURF_LIGHT);
+		PRINTFLAG(SURF_FULLBRIGHT);
+		PRINTFLAG(SURF_SKY);
+		PRINTFLAG(SURF_WARP);
+		PRINTFLAG(SURF_TRANS33);
+		PRINTFLAG(SURF_TRANS66);
+		PRINTFLAG(SURF_FLOWING);
+		PRINTFLAG(SURF_NODRAW);
+		PRINTFLAG(SURF_HINT);
+		PRINTFLAG(SURF_SKIP);
+		PRINTFLAG(SURF_WOOD);
+		PRINTFLAG(SURF_METAL);
+		PRINTFLAG(SURF_STONE);
+		PRINTFLAG(SURF_GLASS);
+		PRINTFLAG(SURF_ICE);
+		PRINTFLAG(SURF_SNOW);
+		PRINTFLAG(SURF_MIRROR);
+		PRINTFLAG(SURF_TRANSTHING);
+		PRINTFLAG(SURF_ALPHACHAN);
+		PRINTFLAG(SURF_MIDTEXTURE);
+		PRINTFLAG(SURF_PUDDLE);
+		PRINTFLAG(SURF_SURGE);
+		PRINTFLAG(SURF_BIGSURGE);
+		PRINTFLAG(SURF_BULLETLIGHT);
+		PRINTFLAG(SURF_FOGPLANE);
+		PRINTFLAG(SURF_SAND);
+		Com_Printf("\n");
+#undef PRINTFLAG
 }
 
 static void OutputTexInfoShaders( const char *basename, msurface_t *faces, int numFaces, mtexinfo_t *texInfos, int numTexInfos, skybox_t *skybox, mfog_t *fogs, int numFogs, bspFile_t *bsp )
@@ -2204,21 +2224,23 @@ static void OutputTexInfoShaders( const char *basename, msurface_t *faces, int n
 
 	StringBuffer( &stringbuf, filedata, sizeof(filedata) - 1 );
 
-	OutputGeneratedFogShaders( basename, fogs, numFogs, &stringbuf );
+	OutputGeneratedFogShaders( fogs, numFogs );
 
-	SkyBoxPrint( basename, skybox, &stringbuf );
+	SkyBoxPrint( skybox );
 
 	// TODO: collect all e.g. fullbright texinfos (same surface flags + texture)
 	// - assign to each group a distinct shaderNum
 	// - if FULLBRIGHT: there should be a glow texture present, so use it
 	// - 
-/*
 	for ( i = 0, tex = texInfos; i < numTexInfos; i++, tex++ ) {
-		if ( !(tex->flags & SURF_FULLBRIGHT) )
+		if ( !(tex->flags & (SURF_ALPHACHAN|SURF_TRANS33|SURF_TRANS66|SURF_FLOWING)) && !tex->image->num_alpha_pixels )
 		{
 			continue;
 		}
 
+		printf("interesting surf: %s\n", tex->image->name );
+		PrintTexInfoSurfaceFlags(tex);
+/*
 		sprintf (line, "texinfo_%d\n", tex->shaderNum);
 		AppendToBuffer( &stringbuf, line );
 
@@ -2245,7 +2267,8 @@ static void OutputTexInfoShaders( const char *basename, msurface_t *faces, int n
 		AppendToBuffer( &stringbuf, line );
 
 		AppendToBuffer( &stringbuf, "}\n" );
-	}*/
+*/
+	}
 
 	if (VIEWFOGS)
 	{
@@ -2892,40 +2915,6 @@ static void ConvertSurfaces( bspFile_t *bsp, msurface_t *faces, int numFaces, mt
 		out->lightmapVecs[2][2] = in->plane->normal[2];
 	}
 	bsp->numSurfaces = numSurfaces;
-}
-
-static void PrintTexInfoSurfaceFlags(mtexinfo_t *texinfo)
-{
-		Com_Printf("%s ", texinfo->image->name );
-#define PRINTFLAG(f) do { if (texinfo->flags & (f)) Com_Printf( "%s ", #f ); } while (0)
-		PRINTFLAG(SURF_LIGHT);
-		PRINTFLAG(SURF_FULLBRIGHT);
-		PRINTFLAG(SURF_SKY);
-		PRINTFLAG(SURF_WARP);
-		PRINTFLAG(SURF_TRANS33);
-		PRINTFLAG(SURF_TRANS66);
-		PRINTFLAG(SURF_FLOWING);
-		PRINTFLAG(SURF_NODRAW);
-		PRINTFLAG(SURF_HINT);
-		PRINTFLAG(SURF_SKIP);
-		PRINTFLAG(SURF_WOOD);
-		PRINTFLAG(SURF_METAL);
-		PRINTFLAG(SURF_STONE);
-		PRINTFLAG(SURF_GLASS);
-		PRINTFLAG(SURF_ICE);
-		PRINTFLAG(SURF_SNOW);
-		PRINTFLAG(SURF_MIRROR);
-		PRINTFLAG(SURF_TRANSTHING);
-		PRINTFLAG(SURF_ALPHACHAN);
-		PRINTFLAG(SURF_MIDTEXTURE);
-		PRINTFLAG(SURF_PUDDLE);
-		PRINTFLAG(SURF_SURGE);
-		PRINTFLAG(SURF_BIGSURGE);
-		PRINTFLAG(SURF_BULLETLIGHT);
-		PRINTFLAG(SURF_FOGPLANE);
-		PRINTFLAG(SURF_SAND);
-		Com_Printf("\n");
-#undef PRINTFLAG
 }
 
 static qboolean outputJKA = qfalse; // TODO: make it truly switchable

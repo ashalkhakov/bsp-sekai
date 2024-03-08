@@ -450,6 +450,14 @@ typedef struct mtexinfo_s
 	int					shaderNum;
 } mtexinfo_t;
 
+typedef struct mshader_s {
+	char				shader[MAX_QPATH];
+	int					surfaceFlags;
+	int					contentFlags;
+	mtexinfo_t			*texinfo;
+	struct mshader_s	*next;
+} mshader_t;
+
 typedef struct glpoly_s
 {
 	struct	glpoly_s	*next;
@@ -2670,6 +2678,10 @@ static void ProcessTexInfo( bspFile_t *bsp, const void *data, dheader_t *header,
 			// even if it has a texture, it is not meant to be drawn
 			out->skip = qtrue;
 		}
+		else if (out->flags & SURF_NODRAW)
+		{
+			out->skip = qtrue; // not meant to be drawn
+		}
 	}
 
 	// count animation frames
@@ -2700,6 +2712,237 @@ static void ProcessTexInfo( bspFile_t *bsp, const void *data, dheader_t *header,
 		out->color[1] = LittleFloat (*fin++);
 		out->color[2] = LittleFloat (*fin++);
 	}
+}
+
+static int TexInfoToShaders(
+	qboolean outputJKA,
+	const char *mapname,
+	mshader_t *shaders, int maxShaders,
+	mshader_t *shaderHashTable[FILE_HASH_SIZE],
+	mtexinfo_t *texInfo, int numTexInfo,
+	int *outsideShaderNum
+) {
+	int							i, j;
+	int							numShaders;
+	mtexinfo_t					*texinfo;
+	mshader_t					*out;
+	char						outShader[MAX_QPATH];
+	char						customName[MAX_QPATH], tempName[MAX_QPATH];
+	int							surfaceFlags, contentFlags;
+	simplifiedShaderParms_t		shaderParms;
+	qboolean					specialShading;
+
+	numShaders = 0;
+	for (i = 0; i < numTexInfo; i++)
+	{
+		texinfo = &texInfo[i];
+
+		// special names
+		if ( texinfo->flags & SURF_SKY )
+		{
+			if ( !outputJKA ) {
+				surfaceFlags = Q3_SURF_SKY | Q3_SURF_NOMARKS | Q3_SURF_NOIMPACT;
+				contentFlags = Q3_CONTENTS_PLAYERCLIP;
+			}
+			else {
+				surfaceFlags = JKA_SURF_SKY | JKA_SURF_NOMARKS | JKA_SURF_NOIMPACT;
+				contentFlags = JKA_CONTENTS_SOLID;
+			}
+
+			sprintf( outShader, "textures/%s/sky", mapname );
+		}
+		else if ( texinfo->flags & SURF_FOGPLANE )
+		{
+			if ( !outputJKA ) {
+				surfaceFlags = Q3_SURF_NODRAW | Q3_SURF_NONSOLID | Q3_SURF_NOIMPACT;
+				contentFlags = Q3_CONTENTS_STRUCTURAL | Q3_CONTENTS_TRANSLUCENT;
+			} else {
+				surfaceFlags = JKA_SURF_NODRAW | JKA_SURF_NOIMPACT;
+				contentFlags = JKA_CONTENTS_TRANSLUCENT;
+			}
+
+			Q_strncpyz(outShader, texinfo->image->name, sizeof( outShader ) );
+		}
+		else if ( StringEndsWith(texinfo->image->name, "clip.tga") )
+		{
+			if ( !outputJKA ) {
+				surfaceFlags = Q3_SURF_NOLIGHTMAP | Q3_SURF_NOMARKS | Q3_SURF_NONSOLID | Q3_SURF_NOIMPACT;
+				contentFlags = Q3_CONTENTS_PLAYERCLIP;
+			} else {
+				surfaceFlags = JKA_SURF_NOMARKS | JKA_SURF_NOIMPACT;
+				contentFlags = JKA_CONTENTS_PLAYERCLIP;
+			}
+
+			Q_strncpyz(outShader, texinfo->image->name, sizeof( outShader ) );
+		}
+		else if ( StringEndsWith(texinfo->image->name, "trigger.tga") )
+		{
+			if ( !outputJKA ) {
+				surfaceFlags = Q3_SURF_NODRAW;
+			} else {
+				surfaceFlags = JKA_SURF_NODRAW;
+			}
+			contentFlags = 0;
+			Q_strncpyz(outShader, "textures/common/trigger", sizeof( outShader ) );
+		}
+		else if ( StringEndsWith(texinfo->image->name, "hint.tga") ) {
+			if ( !outputJKA ) {
+				surfaceFlags = Q3_SURF_NODRAW | Q3_SURF_NONSOLID | Q3_SURF_NOIMPACT;
+				contentFlags = Q3_CONTENTS_STRUCTURAL | Q3_CONTENTS_TRANSLUCENT;
+			} else {
+				surfaceFlags = JKA_SURF_NODRAW | JKA_SURF_NOIMPACT;
+				contentFlags = JKA_CONTENTS_TRANSLUCENT;
+			}
+			Q_strncpyz( outShader, "textures/common/hint" , sizeof( outShader ) );
+		}
+		else
+		{
+			if ( !outputJKA ) {
+				surfaceFlags = DK_SurfaceFlagsToQuake3( texinfo->flags );
+			} else {
+				surfaceFlags = DK_SurfaceFlagsToJKA( texinfo->flags );
+			}
+
+			if ( texinfo->flags & SURF_WARP ) {
+				if ( !outputJKA ) {
+					contentFlags = Q3_CONTENTS_TRANSLUCENT | Q3_CONTENTS_WATER;
+				} else {
+					contentFlags = JKA_CONTENTS_TRANSLUCENT | JKA_CONTENTS_WATER;
+				}
+			}
+			else if ( ( texinfo->flags & SURF_TRANS33 ) || ( texinfo->flags & SURF_TRANS66 ) ) {
+				if ( !outputJKA ) {
+					contentFlags = Q3_CONTENTS_TRANSLUCENT;
+				} else {
+					contentFlags = JKA_CONTENTS_TRANSLUCENT;
+				}
+			}
+			else {
+				// by default, these should be the same as in the wal file
+				// or if overridden, the contents of the face? or brush?
+
+				if ( !outputJKA ) {
+					contentFlags = Q3_CONTENTS_SOLID; // TODO: need some mapping
+				} else {
+					contentFlags = JKA_CONTENTS_SOLID;
+				}
+			}
+
+			if ( VIEWFOGS && (texinfo->flags & SURF_FOGPLANE) ) {
+				sprintf(customName, "texinfo_%d", i);
+				Q_strncpyz(outShader, customName, sizeof( outShader ) );
+			}
+			else
+			{
+				COM_StripExtension(texinfo->image->name, customName);
+				Q_strncpyz(outShader, customName, sizeof( outShader ) );
+			}
+		}
+
+		specialShading = qfalse;
+
+		if ( texinfo->flags & SURF_FLOWING ) {
+			// fScroll=64 * FLOWING_SPEED
+			// given that texscroll is in textures/sec (where 1 means 1 texture per second)
+			// let's divide the constant 64 by texsize, which is also 64 for swamp03.
+			// FLOWING_SPEED is basically 0.5.
+			// so we get for e1m1/swamp03:
+			// tcMod scroll -0.5 0
+	  		float fScroll = -0.5f * ( 64.0f / ( float )texinfo->image->width );
+			shaderParms.texScroll[0] = fScroll;
+			shaderParms.texScroll[1] = 0.0f;
+			specialShading = qtrue;
+		} /*else if ( texinfo->flags & SURF_WARP ) {
+			// TODO: turbulence
+			texScroll[0] = 0.0f;
+			texScroll[1] = 0.0f;
+		}*/ else {
+			shaderParms.texScroll[0] = 0.0f;
+			shaderParms.texScroll[1] = 0.0f;
+		}
+		
+		if ( texinfo->flags & ( SURF_TRANS33 | SURF_TRANS66 ) ) {
+      		shaderParms.blend = BT_BLEND;
+			shaderParms.alphaGenConst = texinfo->flags & SURF_TRANS33 ? 0.33f : 0.66f;
+			shaderParms.cull = CT_NONE;
+			specialShading = qtrue;
+		} else if ( texinfo->flags & SURF_MIDTEXTURE ) {
+			shaderParms.blend = BT_ALPHATEST;
+			shaderParms.alphaGenConst = 1.0f;
+			shaderParms.cull = CT_BACK;
+			specialShading = qtrue;
+		} else if ( texinfo->flags & SURF_ALPHACHAN ) {
+			shaderParms.blend = BT_BLEND;
+			shaderParms.alphaGenConst = 1.0f;
+			shaderParms.cull = CT_NONE;
+			specialShading = qtrue;
+		} else {
+			shaderParms.blend = BT_NONE;
+			shaderParms.alphaGenConst = 1.0f;
+			shaderParms.cull = CT_BACK;
+		}
+
+		if ( texinfo->flags & ( SURF_FULLBRIGHT | SURF_WARP ) ) {
+			shaderParms.lightmapped = qfalse;
+			specialShading = qtrue;
+		} else {
+			shaderParms.lightmapped = qtrue;
+		}
+
+		if ( specialShading ) {
+			COM_StripExtension( outShader, tempName );
+		} else {
+			Q_strncpyz( tempName, outShader, sizeof( tempName ) );
+		}
+
+		snprintf( customName, sizeof( customName ), "%s%s%s%s%s%s%s",
+			tempName,
+			texinfo->flags & SURF_FLOWING ? "f" : "",
+			texinfo->flags & SURF_TRANS33 ? "3" : "",
+			texinfo->flags & SURF_TRANS66 ? "6" : "",
+			texinfo->flags & SURF_MIDTEXTURE ? "m" : "",
+			texinfo->flags & SURF_FULLBRIGHT ? "b" : "",
+			texinfo->flags & SURF_WARP ? "w" : ""
+			);
+		Q_strncpyz( outShader, customName, sizeof( outShader ) );
+
+		long hash = generateHashValue( outShader );
+		for ( out = shaderHashTable[hash]; out; out = out->next ) {
+			if ( strcmp( out->shader, outShader ) == 0
+				&& out->surfaceFlags == surfaceFlags
+				&& out->contentFlags == contentFlags ) {
+				break;
+			}
+		}
+		if ( out ) {
+			texinfo->shaderNum = out - shaders;
+			continue;
+		}
+
+		out = &shaders[numShaders];
+		out->surfaceFlags = surfaceFlags;
+		out->contentFlags = contentFlags;
+		Q_strncpyz( out->shader, outShader, sizeof( out->shader ) );
+		texinfo->shaderNum = numShaders;
+		out->texinfo = texinfo;
+		numShaders++;
+
+		if ( specialShading ) {
+			DefineSimplifiedShader( outShader, texinfo->image->name, &shaderParms );
+		}
+
+		out->next = shaderHashTable[hash];
+		shaderHashTable[hash] = out;
+	}
+
+	Q_strncpyz( shaders[numShaders].shader, "textures/system/outside", sizeof( shaders[numShaders].shader ) );
+	shaders[numShaders].contentFlags |= JKA_CONTENTS_OUTSIDE;
+	shaders[numShaders].surfaceFlags = 0;
+	shaders[numShaders].texinfo = NULL;
+	*outsideShaderNum = numShaders;
+	numShaders++;
+
+	return numShaders;
 }
 
 static void ProcessFaces(
@@ -2812,11 +3055,10 @@ static void ConvertSurfaces( bspFile_t *bsp, msurface_t *faces, int numFaces, mt
 
 	int numIndexes = 0;
 	int numDrawVerts = 0;
-	for (i = 0; i < numFaces; i++)
-	{
+	for ( i = 0; i < numFaces; i++ ) {
 		msurface_t *face = &faces[i];
 
-		if (face->texinfo->skip) {
+		if ( face->texinfo->skip ) {
 			continue; // texinfo has no shader: skip this
 		}
 
@@ -3082,137 +3324,27 @@ bspFile_t *BSP_LoadDK( const bspFormat_t *format, const char *name, const void *
 	ProcessTexInfo( bsp, data, &header, texInfo, numTexInfo );
 
 	// NOTE: for JKA only, add an extra "outside" shader
-	int outsideShaderNum = numTexInfo - 1;
+	int outsideShaderNum;
 	int maxShaders = numTexInfo + 1; // outside
-	int numShaders = 0;
-	bsp->shaders = malloc( maxShaders * sizeof( *bsp->shaders ) );
-	for (i = 0; i < numTexInfo; i++)
+	mshader_t *shaderHashTable[FILE_HASH_SIZE];
+	mshader_t *shaders = malloc( maxShaders * sizeof( *shaders ) );
+
+	memset( shaderHashTable, 0, FILE_HASH_SIZE * sizeof( *shaderHashTable ) );
+	int numShaders = TexInfoToShaders( outputJKA, mapname, shaders, maxShaders, shaderHashTable, texInfo, numTexInfo, &outsideShaderNum );
+
+	// shaders
+	bsp->numShaders = numShaders;
+	bsp->shaders = malloc( bsp->numShaders * sizeof( *bsp->shaders ) );
 	{
-		mtexinfo_t *texinfo = &texInfo[i];
+		mshader_t *inShader = shaders;
+		dshader_t *outShader = bsp->shaders;
 
-		// TODO:
-		// group texinfos by flags + texture name
-		// assign to each such group a shader
-		// 
-
-		dshader_t *out = &bsp->shaders[numShaders];
-		texinfo->shaderNum = numShaders;
-		numShaders++;
-
-		// print out flags
-		//PrintTexInfoSurfaceFlags(texinfo);
-
-		// special names
-		if (texinfo->flags & SURF_SKY)
-		{
-			if ( !outputJKA ) {
-				out->surfaceFlags = Q3_SURF_SKY | Q3_SURF_NOMARKS | Q3_SURF_NOIMPACT;
-				out->contentFlags = Q3_CONTENTS_PLAYERCLIP;
-			}
-			else {
-				out->surfaceFlags = JKA_SURF_SKY | JKA_SURF_NOMARKS | JKA_SURF_NOIMPACT;
-				out->contentFlags = JKA_CONTENTS_SOLID;
-			}
-
-			sprintf( out->shader, "textures/%s/sky", mapname );
-		}
-		else if (texinfo->flags & SURF_FOGPLANE)
-		{
-			if ( !outputJKA ) {
-				out->surfaceFlags = Q3_SURF_NODRAW | Q3_SURF_NONSOLID | Q3_SURF_NOIMPACT;
-				out->contentFlags = Q3_CONTENTS_STRUCTURAL | Q3_CONTENTS_TRANSLUCENT;
-			} else {
-				out->surfaceFlags = JKA_SURF_NODRAW | JKA_SURF_NOIMPACT;
-				out->contentFlags = JKA_CONTENTS_TRANSLUCENT;
-			}
-
-			//Q_strncpyz(out->shader, "textures/common/nodraw", sizeof( out->shader ) );
-			Q_strncpyz(out->shader, texinfo->image->name, sizeof( out->shader ) );
-		}
-		else if (StringEndsWith(texinfo->image->name, "clip.tga"))
-		{
-			if ( !outputJKA ) {
-				out->surfaceFlags = Q3_SURF_NOLIGHTMAP | Q3_SURF_NOMARKS | Q3_SURF_NONSOLID | Q3_SURF_NOIMPACT;
-				out->contentFlags = Q3_CONTENTS_PLAYERCLIP;
-			} else {
-				out->surfaceFlags = JKA_SURF_NOMARKS | JKA_SURF_NOIMPACT;
-				out->contentFlags = JKA_CONTENTS_PLAYERCLIP;
-			}
-
-			//Q_strncpyz(out->shader, "textures/common/clip", sizeof( out->shader ) );
-			Q_strncpyz(out->shader, texinfo->image->name, sizeof( out->shader ) );
-		}
-		else if (StringEndsWith(texinfo->image->name, "trigger.tga"))
-		{
-			if ( !outputJKA ) {
-				out->surfaceFlags = Q3_SURF_NODRAW;
-			} else {
-				out->surfaceFlags = JKA_SURF_NODRAW;
-			}
-			out->contentFlags = 0;
-			Q_strncpyz(out->shader, "textures/common/trigger", sizeof( out->shader ) );
-		}
-		else if (StringEndsWith(texinfo->image->name, "hint.tga")) {
-			if ( !outputJKA ) {
-				out->surfaceFlags = Q3_SURF_NODRAW | Q3_SURF_NONSOLID | Q3_SURF_NOIMPACT;
-				out->contentFlags = Q3_CONTENTS_STRUCTURAL | Q3_CONTENTS_TRANSLUCENT;
-			} else {
-				out->surfaceFlags = JKA_SURF_NODRAW | JKA_SURF_NOIMPACT;
-				out->contentFlags = JKA_CONTENTS_TRANSLUCENT;
-			}
-			Q_strncpyz( out->shader, "textures/common/hint" , sizeof( out->shader ) );
-		}
-		else
-		{
-			if ( !outputJKA ) {
-				out->surfaceFlags = DK_SurfaceFlagsToQuake3( texinfo->flags );
-			} else {
-				out->surfaceFlags = DK_SurfaceFlagsToJKA( texinfo->flags );
-			}
-
-			if ( texinfo->flags & SURF_WARP ) {
-				if ( !outputJKA ) {
-					out->contentFlags = Q3_CONTENTS_TRANSLUCENT | Q3_CONTENTS_WATER;
-				} else {
-					out->contentFlags = JKA_CONTENTS_TRANSLUCENT | JKA_CONTENTS_WATER;
-				}
-			}
-			else if ( ( texinfo->flags & SURF_TRANS33 ) || ( texinfo->flags & SURF_TRANS66 ) ) {
-				if ( !outputJKA ) {
-					out->contentFlags = Q3_CONTENTS_TRANSLUCENT;
-				} else {
-					out->contentFlags = JKA_CONTENTS_TRANSLUCENT;
-				}
-			}
-			else {
-				// by default, these should be the same as in the wal file
-				// or if overridden, the contents of the face? or brush?
-
-				if ( !outputJKA ) {
-					out->contentFlags = Q3_CONTENTS_SOLID; // TODO: need some mapping
-				} else {
-					out->contentFlags = JKA_CONTENTS_SOLID;
-				}
-			}
-
-			if ( VIEWFOGS && (texinfo->flags & SURF_FOGPLANE) ) {
-				char customName[MAX_QPATH];
-				sprintf(customName, "texinfo_%d", i);
-				Q_strncpyz(out->shader, customName, sizeof( out->shader ) );
-			}
-			else
-			{
-				char customName[MAX_QPATH];
-				COM_StripExtension(texinfo->image->name, customName);
-				Q_strncpyz(out->shader, customName, sizeof( out->shader ) );
-			}
+		for ( i = 0 ; i < bsp->numShaders ; i++, inShader++, outShader++ ) {
+			Q_strncpyz( outShader->shader, inShader->shader, sizeof( outShader->shader ) );
+			outShader->surfaceFlags = inShader->surfaceFlags;
+			outShader->contentFlags = inShader->contentFlags;
 		}
 	}
-	Q_strncpyz( bsp->shaders[numShaders].shader, "textures/system/outside", sizeof( bsp->shaders[numShaders].shader ) );
-	bsp->shaders[numShaders].contentFlags |= JKA_CONTENTS_OUTSIDE;
-	bsp->shaders[numShaders].surfaceFlags = 0;
-	numShaders++;
-	bsp->numShaders = numShaders;
 
 	// brushsides
 	bsp->numBrushSides = numBrushSides;
@@ -3583,6 +3715,7 @@ bspFile_t *BSP_LoadDK( const bspFormat_t *format, const char *name, const void *
 	free(brushes);
 	free(nodes);
 	free(verts);
+	free(shaders);
 	//free(areas);
 	//free(areaPortals);
 

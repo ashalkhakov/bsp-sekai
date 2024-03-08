@@ -534,7 +534,7 @@ void DefineFogShader( const char *name, float color[3], float distance ) {
     mapShaderSource->newShaders = sh;
 }
 
-void DefineShader( const char *name, const char *diffuseImage, const char *fullbrightImage, qboolean alphaTested, infoParm_t **parms, int numParms ) {
+void DefineSimplifiedShader( const char *name, const char *diffuseImage, simplifiedShaderParms_t *parms ) {
     shader_t        *sh;
     int             i;
 
@@ -542,9 +542,6 @@ void DefineShader( const char *name, const char *diffuseImage, const char *fullb
         return;
 	}
 
-    if ( !alphaTested && !( fullbrightImage && fullbrightImage[0] ) ) {
-        return; // not interesting enough
-	}
 	if ( numInfoParms > MAX_SURFACEPARMS_PER_SHADER ) {
 		Com_Printf( "MAX_SURFACEPARMS_PER_SHADER: %s\n", name );
 		return;
@@ -555,21 +552,16 @@ void DefineShader( const char *name, const char *diffuseImage, const char *fullb
         // can't doo much
         return;
     }
-    if ( sh->shaderType == ST_SOURCED ) {
+    if ( sh->shaderType != ST_CLEAN ) {
         return;
     }
     Q_strncpyz( sh->diffuseMap, diffuseImage, sizeof( sh->diffuseMap ) );
-    sh->alphaTested = alphaTested;
-    if ( fullbrightImage && fullbrightImage[0] ) {
-        Q_strncpyz( sh->fullbrightMap, fullbrightImage, sizeof( sh->fullbrightMap ) );
-    } else {
-        sh->fullbrightMap[0] = 0;
-    }
+	memcpy( &sh->simplifiedShaderParms, parms, sizeof( sh->simplifiedShaderParms ) );
 
-	sh->numSurfaceParms = numParms;
-	memcpy( sh->surfaceParms, parms, numParms * sizeof( sh->surfaceParms[0] ) );
+	//sh->numSurfaceParms = numParms;
+	//memcpy( sh->surfaceParms, parms, numParms * sizeof( sh->surfaceParms[0] ) );
 
-    sh->shaderType = ST_GENERIC;
+    sh->shaderType = ST_SIMPLIFIED;
     sh->file = mapShaderSource;
     sh->nextInFile = mapShaderSource->newShaders;
     mapShaderSource->newShaders = sh;
@@ -624,17 +616,50 @@ static void fprint_shader( FILE *fp, shader_t *shader ) {
 			}
 		}
 		break;
-	case ST_GENERIC:
-	default:
-		// TODO: print shader surfaceparms
-		fprintf( fp, "\tsurfaceparm alphashadow\n" );
-		fprintf( fp, "\tsurfaceparm trans\n" );
+	case ST_SIMPLIFIED:
+		switch ( shader->simplifiedShaderParms.cull ) {
+			case CT_BACK:
+				fprintf( fp, "\tcull back\n" );
+				break;
+			case CT_FRONT:
+				fprintf( fp, "\tcull front\n" );
+				break;
+			case CT_NONE:
+				fprintf( fp, "\tcull none\n" );
+				break;
+		}
+
 		fprintf( fp, "\t{\n" );
 		fprintf( fp, "\t\tmap %s\n", shader->diffuseMap );
-		fprintf( fp, "\t\trgbGen identity\n" );
-		fprintf( fp, "\t\tdepthWrite\n" );
-		fprintf( fp, "\t\talphaFunc GE128\n" );
+		switch ( shader->simplifiedShaderParms.blend ) {
+			case BT_NONE:
+				break;
+			case BT_ALPHATEST:
+				fprintf( fp, "\t\talphaFunc GT0\n" );
+				fprintf( fp, "\t\tdepthWrite\n" );
+        		fprintf( fp, "\t\tdepthFunc lequal\n" );
+				break;
+			case BT_BLEND:
+				fprintf( fp, "\t\tblendfunc blend\n" );
+				break;
+		}
+		if ( shader->simplifiedShaderParms.alphaGenConst != 1.0f ) {
+			fprintf( fp, "\t\talphaGen const %f\n", shader->simplifiedShaderParms.alphaGenConst );
+		}
+		if ( shader->simplifiedShaderParms.texScroll[0] || shader->simplifiedShaderParms.texScroll[1] ) {
+			fprintf( fp, "\t\ttcMod scroll %f %f\n", shader->simplifiedShaderParms.texScroll[0], shader->simplifiedShaderParms.texScroll[1] );
+		}
 		fprintf( fp, "\t}\n" );
+
+		if ( shader->simplifiedShaderParms.lightmapped ) {
+			fprintf( fp, "\t{\n" );
+			fprintf( fp, "\t\tmap $lightmap\n" );
+			fprintf( fp, "\t\tblendFunc GL_DST_COLOR GL_ZERO\n");
+			fprintf( fp, "\t\tdepthFunc equal\n" );
+			fprintf( fp, "\t}\n" );
+		}
+		break;
+	default:
 		break;
 	}
     fprintf( fp, "}\n" );

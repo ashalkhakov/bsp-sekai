@@ -44,7 +44,7 @@ typedef enum {
     ST_SOURCED     = 1, // whatever is in the file
     ST_FOG         = 2,
     ST_SKY         = 3,
-    ST_GENERIC     = 4
+    ST_SIMPLIFIED  = 4
 } shaderType_t;
 
 typedef struct {
@@ -78,31 +78,53 @@ typedef struct skyBoxShader_s {
 	skyBoxShaderLayer_t layers[MAX_SKYBOXLAYERS_PER_SHADER];
 } skyBoxShader_t;
 
+typedef enum cullType_s {
+    CT_BACK = 0,
+    CT_FRONT = 1,
+    CT_NONE = 2
+} cullType_t;
+
+typedef enum blendType_s {
+    BT_NONE = 0,
+    BT_ALPHATEST = 1,
+    BT_BLEND = 2
+} blendType_t;
+
+typedef struct simplifiedShaderParms_s {
+    float		texScroll[2];
+    float		alphaGenConst;
+    blendType_t	blend;
+    qboolean	lightmapped;
+    cullType_t	cull;
+} simplifiedShaderParms_t;
+
 typedef struct shader_s
 {
-    char             name[MAX_QPATH];
-    shaderType_t     shaderType;
+    char                    name[MAX_QPATH];
+    shaderType_t            shaderType;
 
-    skyBoxShader_t   skyBox;
-    float            fogParms[4];
+    skyBoxShader_t          skyBox;
+    float                   fogParms[4];
 
-    char             editorImage[MAX_QPATH];
+    char                    editorImage[MAX_QPATH];
 
-    char             diffuseMap[MAX_QPATH];
-    int              alphaTested;
-    char             fullbrightMap[MAX_QPATH];
+    char                    diffuseMap[MAX_QPATH];
+    int                     alphaTested;
+    char                    fullbrightMap[MAX_QPATH];
 
-	infoParm_t		 **surfaceParms[MAX_SURFACEPARMS_PER_SHADER];
-	int				 numSurfaceParms;
+    simplifiedShaderParms_t simplifiedShaderParms;
 
-    shaderSource_t   *file;
-    shader_t         *next, *nextInFile;
+	infoParm_t		        **surfaceParms[MAX_SURFACEPARMS_PER_SHADER];
+	int				        numSurfaceParms;
+
+    shaderSource_t          *file;
+    shader_t                *next, *nextInFile;
 } shader_t;
 
 void InitShaders( const char *basepath, const char *mapName );
 void DefineFogShader( const char *name, float color[3], float distance );
 void DefineSkyBoxShader( skyBoxShader_t *sky, float fogColor[3], float fogDistance, const char *editorImage );
-void DefineShader( const char *name, const char *diffuseImage, const char *fullbrightImage, qboolean alphaTested, infoParm_t **infoParms, int numInfoParms );
+void DefineSimplifiedShader( const char *name, const char *diffuseImage, simplifiedShaderParms_t *parms );
 void WriteShaders( void );
 
 #endif

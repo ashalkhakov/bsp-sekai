@@ -68,8 +68,8 @@ char *COM_SkipPath( char *pathname );
 #define LittleLong(x) (x)
 #define LittleFloat(x) (x)
 
-#define VectorSet( v, a, b, c ) do { v[0] = a; v[1] = b; v[2] = c; } while (0)
-#define VectorCopy( src, dst ) do { dst[0] = src[0]; dst[1] = src[2]; dst[2] = src[2]; } while (0)
+#define VectorSet( v, a, b, c ) do { (v)[0] = a; (v)[1] = b; (v)[2] = c; } while (0)
+#define VectorCopy( src, dst ) do { (dst)[0] = (src)[0]; (dst)[1] = (src)[2]; (dst)[2] = (src)[2]; } while (0)
 
 #define MIN( x, y ) ( (x) < (y) ? (x) : (y) )
 #define MAX( x, y ) ( (x) > (y) ? (x) : (y) )

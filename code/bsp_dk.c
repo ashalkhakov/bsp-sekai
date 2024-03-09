@@ -112,6 +112,9 @@
 #define	SURF_FLOWING	0x00000040	// scroll towards angle
 #define	SURF_NODRAW		0x00000080	// don't bother referencing the texture
 
+#define SURF_DRAWTURB	0x10		// NOTE: strangely enough, same as SURF_WARP
+#define SURF_DRAWFOG	0x100		// NOTE: strangely enough, same as SURF_HINT
+
 #define	SURF_HINT		0x00000100	// make a primary bsp splitter
 #define	SURF_SKIP		0x00000200	// completely ignore, allowing non-closed brushes
 
@@ -462,9 +465,9 @@ typedef struct glpoly_s
 {
 	struct	glpoly_s	*next;
 	struct	glpoly_s	*chain;
-	int		numverts;
-	int		flags;			// for SURF_UNDERWATER (not needed anymore?)
-	drawVert_t	*verts;	// variable sized (xyz s1t1 s2t2)
+	int					numverts;
+	int					flags;		// for SURF_UNDERWATER (not needed anymore?)
+	drawVert_t			verts[0];	// variable sized (xyz s1t1 s2t2)
 } glpoly_t;
 
 typedef struct msurface_s
@@ -650,7 +653,6 @@ glpoly_t *AllocGLPoly( int numverts ){
 	memset( ptr, 0, sizeof( glpoly_t ) );
 
 	poly = (glpoly_t *)	ptr;
-	poly->verts = (drawVert_t*)(ptr + sizeof(glpoly_t));
 
 	return poly;
 }
@@ -747,7 +749,7 @@ void GL_BuildPolygonFromSurface( float *vertexes, medge_t *pedges, int *surfedge
 	poly = AllocGLPoly( lnumverts );
 
 	poly->next = pSurf->polys;
-//	poly->flags = pSurf->flags;
+	//poly->flags = pSurf->flags;
 	pSurf->polys = poly;
 	poly->numverts = lnumverts;
 
@@ -816,6 +818,335 @@ void GL_BuildPolygonFromSurface( float *vertexes, medge_t *pedges, int *surfedge
 		poly->verts[i].normal[2] = pSurf->plane->normal[2];
 	}
 }
+
+void BoundPoly (int numverts, vec3_t *verts, vec3_t mins, vec3_t maxs)
+{
+	mins[0] = mins[1] = mins[2] = 9999;
+	maxs[0] = maxs[1] = maxs[2] = -9999;
+
+	for ( int i = 0 ; i < numverts ; i++ )
+	{
+		if( verts[i][0] < mins[0] )
+			mins[0] = verts[i][0];
+		if( verts[i][0] > maxs[0] )
+			maxs[0] = verts[i][0];
+
+		if( verts[i][1] < mins[1] )
+			mins[1] = verts[i][1];
+		if( verts[i][1] > maxs[1] )
+			maxs[1] = verts[i][1];
+
+		if( verts[i][2] < mins[2] )
+			mins[2] = verts[i][2];
+		if( verts[i][2] > maxs[2] )
+			maxs[2] = verts[i][2];
+
+	}
+}
+
+void BoundSubdividedPoly ( msurface_t *pSurf, vec3_t mins, vec3_t maxs )
+{
+	glpoly_t	*pPoly;
+	drawVert_t	*verts;
+	int			numverts;
+
+	mins[0] = mins[1] = mins[2] = 9999;
+	maxs[0] = maxs[1] = maxs[2] = -9999;
+
+	for( pPoly = pSurf->polys; pPoly; pPoly = pPoly->next )
+	{
+		verts = pPoly->verts;
+		numverts = pPoly->numverts;
+
+		for ( int i = 0 ; i < numverts ; i++ )
+		{
+			if( verts[i].xyz[0] < mins[0] )
+				mins[0] = verts[i].xyz[0];
+			if( verts[i].xyz[0] > maxs[0] )
+				maxs[0] = verts[i].xyz[0];
+
+			if( verts[i].xyz[1] < mins[1] )
+				mins[1] = verts[i].xyz[1];
+			if( verts[i].xyz[1] > maxs[1] )
+				maxs[1] = verts[i].xyz[1];
+
+			if( verts[i].xyz[2] < mins[2] )
+				mins[2] = verts[i].xyz[2];
+			if( verts[i].xyz[2] > maxs[2] )
+				maxs[2] = verts[i].xyz[2];
+		}
+	}
+}
+
+void SubdividePolygon( msurface_t *warpface, int numverts, vec3_t *verts )
+{
+	float		gl_subdivide_size = 256.0f;
+	int			i, j, k;
+	vec3_t		mins, maxs;
+	float		m;
+	vec3_t		front[64], back[64];
+	int			f, b;
+	float		dist[64];
+	float		frac;
+	glpoly_t	*poly;
+	float		s, t;
+	vec3_t		total;
+	float		total_s, total_t;
+	float		lightmap_total_s, lightmap_total_t;
+
+	if (numverts > 60)
+		Com_Error (ERR_DROP, "numverts = %i", numverts);
+
+	BoundPoly( numverts, verts, mins, maxs );
+
+	for ( i = 0 ; i < 3 ; i++ )
+	{
+		m = (mins[i] + maxs[i]) * 0.5;
+		m = gl_subdivide_size * floor (m / gl_subdivide_size + 0.5);
+
+		if (maxs[i] - m < 8)
+		{
+			continue;
+		}
+		if (m - mins[i] < 8)
+		{
+			continue;
+		}
+
+		// cut it
+		for ( j = 0 ; j < numverts ; j++ )
+		{
+			dist[j] = verts[j][i] - m;
+		}
+
+		// wrap cases
+		dist[j] = dist[0];
+		verts[numverts][0] = verts[0][0];
+		verts[numverts][1] = verts[0][1];
+		verts[numverts][2] = verts[0][2];
+
+		f = 0;
+		b = 0;
+		for ( j = 0 ; j < numverts ; j++ )
+		{
+			if (dist[j] >= 0)
+			{
+				front[f][0] = verts[j][0];
+				front[f][1] = verts[j][1];
+				front[f][2] = verts[j][2];
+				f++;
+			}
+			if (dist[j] <= 0)
+			{
+				back[b][0] = verts[j][0];
+				back[b][1] = verts[j][1];
+				back[b][2] = verts[j][2];
+				b++;
+			}
+			
+			if (dist[j] == 0 || dist[j+1] == 0)
+			{
+				continue;
+			}
+
+			if ( (dist[j] > 0) != (dist[j+1] > 0) )
+			{
+				// clip point
+				frac = dist[j] / (dist[j] - dist[j+1]);
+				
+				for (k=0 ; k<3 ; k++)
+					front[f][k] = back[b][k] = verts[j][k] + frac*(verts[j+1][k] - verts[j][k]);
+
+				f++;
+				b++;
+			}
+		}
+
+		SubdividePolygon( warpface, f, front );
+		SubdividePolygon( warpface, b, back );
+		return;
+	}										
+
+	int lnumverts;
+
+	// add a point in the center to help keep warp valid
+	//if( warpface->flags & SURF_DRAWFOG )
+	{
+		lnumverts = numverts;
+
+		poly = AllocGLPoly( lnumverts );
+
+		poly->next		= warpface->polys;
+		warpface->polys = poly;
+		poly->numverts	= lnumverts;
+
+		for ( i = 0 ; i < numverts ; i++ )
+		{
+			poly->verts[i].xyz[0] = verts[i][0];
+			poly->verts[i].xyz[1] = verts[i][1];
+			poly->verts[i].xyz[2] = verts[i][2];
+
+			s = DotProduct(verts[i], warpface->texinfo->s) + warpface->texinfo->s_offset;
+			t = DotProduct(verts[i], warpface->texinfo->t) + warpface->texinfo->t_offset;
+			s /= warpface->texinfo->image->width;
+			t /= warpface->texinfo->image->height;
+
+			poly->verts[i].st[0] = s;
+			poly->verts[i].st[1] = t;
+
+			s = DotProduct( verts[i], warpface->texinfo->s ) + warpface->texinfo->s_offset;
+			s -= ( warpface->texturemins[0] );
+			s += warpface->light_s * 16;
+			s += 8;
+			s /= 2048;
+
+			t = DotProduct( verts[i], warpface->texinfo->t ) + warpface->texinfo->t_offset;
+			t -= ( warpface->texturemins[1] );
+			t += warpface->light_t * 16;
+			t += 8;
+			t /= 2048;
+
+			poly->verts[i].lightmap[0][0] = s;
+			poly->verts[i].lightmap[0][1] = t;
+
+			poly->verts[i].normal[0] = warpface->plane->normal[0];
+			poly->verts[i].normal[1] = warpface->plane->normal[1];
+			poly->verts[i].normal[2] = warpface->plane->normal[2];
+		}
+	}
+	/*else
+	{
+		lnumverts = numverts + 2;
+
+		poly = AllocGLPoly( lnumverts );
+
+		poly->next		= warpface->polys;
+		warpface->polys = poly;
+		poly->numverts	= lnumverts;
+
+		VectorSet( total, 0, 0, 0 );
+		total_s = 0;
+		total_t = 0;
+		lightmap_total_s = 0;
+		lightmap_total_t = 0;
+
+		for ( i = 0 ; i < numverts ; i++ )
+		{
+			poly->verts[i + 1].xyz[0] = verts[i][0];
+			poly->verts[i + 1].xyz[1] = verts[i][1];
+			poly->verts[i + 1].xyz[2] = verts[i][2];
+
+			s = DotProduct(verts[i], warpface->texinfo->s) + warpface->texinfo->s_offset;
+			t = DotProduct(verts[i], warpface->texinfo->t) + warpface->texinfo->t_offset;
+			s /= warpface->texinfo->image->width;
+			t /= warpface->texinfo->image->height;
+
+			poly->verts[i + 1].st[0] = s;
+			poly->verts[i + 1].st[1] = t;
+
+			total_s += s;
+			total_t += t;
+			total[0] += verts[i][0];
+			total[1] += verts[i][1];
+			total[2] += verts[i][2];
+
+			s = DotProduct( verts[i], warpface->texinfo->s ) + warpface->texinfo->s_offset;
+			s -= ( warpface->texturemins[0] );
+			s += warpface->light_s * 16;
+			s += 8;
+			s /= 2048;
+
+			t = DotProduct( verts[i], warpface->texinfo->t ) + warpface->texinfo->t_offset;
+			t -= ( warpface->texturemins[1] );
+			t += warpface->light_t * 16;
+			t += 8;
+			t /= 2048;
+
+			poly->verts[i + 1].lightmap[0][0] = s;
+			poly->verts[i + 1].lightmap[0][1] = t;
+
+			lightmap_total_s += s;
+			lightmap_total_t += t;
+
+			poly->verts[i + 1].normal[0] = warpface->plane->normal[0];
+			poly->verts[i + 1].normal[1] = warpface->plane->normal[1];
+			poly->verts[i + 1].normal[2] = warpface->plane->normal[2];
+		}
+
+		poly->verts[0].xyz[0] = total[0] * ( 1.0 / numverts );
+		poly->verts[0].xyz[1] = total[1] * ( 1.0 / numverts );
+		poly->verts[0].xyz[2] = total[2] * ( 1.0 / numverts );
+
+		poly->verts[0].st[0] = ( total_s/numverts );
+		poly->verts[0].st[1] = ( total_t/numverts );
+		poly->verts[0].lightmap[0][0] = lightmap_total_s/numverts;
+		poly->verts[0].lightmap[0][1] = lightmap_total_t/numverts;
+
+		poly->verts[0].normal[0] = warpface->plane->normal[0];
+		poly->verts[0].normal[1] = warpface->plane->normal[1];
+		poly->verts[0].normal[2] = warpface->plane->normal[2];
+
+		// copy first vertex to last
+		VectorCopy( poly->verts[1].xyz, poly->verts[i + 1].xyz );
+		poly->verts[i + 1].st[0] = poly->verts[1].st[0];
+		poly->verts[i + 1].st[1] = poly->verts[1].st[1];
+		poly->verts[i + 1].lightmap[0][0] = poly->verts[1].lightmap[0][0];
+		poly->verts[i + 1].lightmap[0][1] = poly->verts[1].lightmap[0][1];
+		poly->verts[i + 1].normal[0] = warpface->plane->normal[0];
+		poly->verts[i + 1].normal[1] = warpface->plane->normal[1];
+		poly->verts[i + 1].normal[2] = warpface->plane->normal[2];
+	}*/
+}
+
+/*
+================
+GL_SubdivideSurface
+
+Breaks a polygon up along axial 64 unit
+boundaries so that turbulent and sky warps
+can be done reasonably.
+================
+*/
+void GL_SubdivideSurface( float *vertexes, medge_t *pedges, int *surfEdges, msurface_t *fa )
+{
+	vec3_t		verts[64];
+	int			numverts;
+	int			i;
+	int			lindex;
+	vec3_t		vec;
+	medge_t		*r_pedge;
+
+	//
+	// convert edges back to a normal polygon
+	//
+	numverts = 0;
+	for (i=0 ; i<fa->numedges ; i++)
+	{
+		lindex = surfEdges[fa->firstedge + i];
+
+		if (lindex > 0)
+		{
+			r_pedge = &pedges[lindex];
+			vec[0] = vertexes[r_pedge->v[0] * 3 + 0];
+			vec[1] = vertexes[r_pedge->v[0] * 3 + 1];
+			vec[2] = vertexes[r_pedge->v[0] * 3 + 2];
+		}
+		else
+		{
+			r_pedge = &pedges[-lindex];
+			vec[0] = vertexes[r_pedge->v[1] * 3 + 0];
+			vec[1] = vertexes[r_pedge->v[1] * 3 + 1];
+			vec[2] = vertexes[r_pedge->v[1] * 3 + 2];
+		}
+		verts[numverts][0] = vec[0];
+		verts[numverts][1] = vec[1];
+		verts[numverts][2] = vec[2];
+		numverts++;
+	}
+
+	SubdividePolygon( fa, numverts, verts );
+}
+
 
 static void DecompressVis (byte *visibility, int numvisibility, realDvis_t *vis, int clusterBytes, byte * out_real) {
 	int c;
@@ -3015,13 +3346,13 @@ static void ProcessFaces(
 			}
 
 			// set the drawing flags
-			//if (out->texinfo->flags & SURF_WARP)
-			//{
-			//	out->flags |= SURF_DRAWTURB;
-			//	GL_SubdivideSurface (out);	// cut up polygon for warps
-			//}
-			//if (! (out->texinfo->flags & (SURF_WARP)) ) 
-			GL_BuildPolygonFromSurface(verts, edges, surfEdges, out);
+			if (out->texinfo->flags & SURF_WARP)
+			{
+				out->flags |= SURF_DRAWTURB;
+				GL_SubdivideSurface( verts, edges, surfEdges, out );	// cut up polygon for warps
+			} else {
+				GL_BuildPolygonFromSurface(verts, edges, surfEdges, out);
+			}
 		}
 	}
 
@@ -3051,10 +3382,11 @@ static void ProcessFaces(
 }
 
 static void ConvertSurfaces( bspFile_t *bsp, msurface_t *faces, int numFaces, mtexinfo_t *texInfo, int numTexInfo ) {
-	int	i,j,k;
+	int			i,j,k;
+	int			numIndexes = 0;
+	int			numDrawVerts = 0;
+	glpoly_t	*poly;
 
-	int numIndexes = 0;
-	int numDrawVerts = 0;
 	for ( i = 0; i < numFaces; i++ ) {
 		msurface_t *face = &faces[i];
 
@@ -3062,8 +3394,12 @@ static void ConvertSurfaces( bspFile_t *bsp, msurface_t *faces, int numFaces, mt
 			continue; // texinfo has no shader: skip this
 		}
 
-		numDrawVerts += face->polys->numverts;
-		numIndexes += (face->polys->numverts - 2) * 3;
+		poly = face->polys;
+		while ( poly ) {
+			numDrawVerts += poly->numverts;
+			numIndexes += (poly->numverts - 2) * 3;
+			poly = poly->next;
+		}
 	}
 	
 	bsp->numDrawVerts = 0;
@@ -3080,15 +3416,8 @@ static void ConvertSurfaces( bspFile_t *bsp, msurface_t *faces, int numFaces, mt
 		dsurface_t *out = &bsp->surfaces[numSurfaces++];
 		int *index;
 
-		//if ((in->flags & SURF_FOGPLANE) || (in->texinfo->flags & SURF_FOGPLANE)) {
-		//	printf("no idea %s\n", in->texinfo->image->name);
-		//}
-
-#if 1
 		out->shaderNum = in->texinfo->shaderNum;
-#else
-		out->shaderNum = in->shaderNum;
-#endif
+
 		if (VIEWFOGS)
 		{
 			out->fogNum = in->fogNum;
@@ -3099,42 +3428,65 @@ static void ConvertSurfaces( bspFile_t *bsp, msurface_t *faces, int numFaces, mt
 		}
 		out->surfaceType = MST_PLANAR;
 
-		// convert vertices
 		out->firstVert = bsp->numDrawVerts;
-		if (in->texinfo->skip)
-		{
-			out->numVerts = 0;
-		}
-		else
-		{
-			out->numVerts = in->polys->numverts;
-			bsp->numDrawVerts += out->numVerts;
-			memcpy(bsp->drawVerts + out->firstVert, in->polys->verts, out->numVerts * sizeof(*bsp->drawVerts));
-			for (j = 0; j < out->numVerts; j++)
-			{
-				bsp->drawVerts[out->firstVert + j].color[0][0] = in->texinfo->color[0];
-				bsp->drawVerts[out->firstVert + j].color[0][1] = in->texinfo->color[1];
-				bsp->drawVerts[out->firstVert + j].color[0][2] = in->texinfo->color[2];
-				bsp->drawVerts[out->firstVert + j].color[0][3] = 255;
-			}
-		}
-
-		// convert indices
 		out->firstIndex = bsp->numDrawIndexes;
-		if (in->texinfo->skip)
+		out->numVerts = 0;
+		out->numIndexes = 0;
+		if (!in->texinfo->skip)
 		{
-			out->numIndexes = 0;
-		}
-		else
-		{
-			out->numIndexes = (in->polys->numverts - 2) * 3;
-			bsp->numDrawIndexes += out->numIndexes;
-			index = &bsp->drawIndexes[out->firstIndex];
-			for (k = 0, j = 2; k < out->numIndexes; k += 3, j++) {
-				index[k + 0] = 0;
-				index[k + 1] = j - 1;
-				index[k + 2] = j;
+			poly = in->polys;
+
+			int firstVert, firstIndex;
+			int firstVertInPoly = 0;
+
+			firstVert = out->firstVert;
+			firstIndex = out->firstIndex;
+			while ( poly ) {
+				int numVertsInPoly = poly->numverts;
+				int numIndexesInPoly = ( poly->numverts - 2 ) * 3;
+
+				out->numVerts += numVertsInPoly;
+				bsp->numDrawVerts += numVertsInPoly;
+				for (j = 0; j < numVertsInPoly; j++) {
+					poly->verts[j].color[0][0] = in->texinfo->color[0];
+					poly->verts[j].color[0][1] = in->texinfo->color[1];
+					poly->verts[j].color[0][2] = in->texinfo->color[2];
+					poly->verts[j].color[0][3] = 255;
+				}
+				memcpy(bsp->drawVerts + firstVert, poly->verts, numVertsInPoly * sizeof(*bsp->drawVerts));
+
+				out->numIndexes += numIndexesInPoly;
+				bsp->numDrawIndexes += numIndexesInPoly;
+				index = &bsp->drawIndexes[firstIndex];
+				for (k = 0, j = 2; k < numIndexesInPoly; k += 3, j++) {
+					index[k + 0] = firstVertInPoly;
+					index[k + 1] = firstVertInPoly + j - 1;
+					index[k + 2] = firstVertInPoly + j;
+				}
+
+				firstVert += numVertsInPoly;
+				firstIndex += numIndexesInPoly;
+				firstVertInPoly += numVertsInPoly;
+				poly = poly->next;
 			}
+			/*
+			if ( in->polys && in->polys->next ) {
+				Com_Printf("surface example\n");
+				Com_Printf("verts\n");
+				for ( j = 0; j < out->numVerts; j++ ) {
+					Com_Printf("%i: %f %f %f\n", j,
+						bsp->drawVerts[out->firstVert + j].xyz[0],
+						bsp->drawVerts[out->firstVert + j].xyz[1],
+						bsp->drawVerts[out->firstVert + j].xyz[2] );
+				}
+				Com_Printf("tris\n");
+				for ( j = 0; j < out->numIndexes / 3; j++ ) {
+					Com_Printf("%i %i %i\n",
+						bsp->drawIndexes[out->firstIndex+j*3 + 0],
+						bsp->drawIndexes[out->firstIndex+j*3 + 1],
+						bsp->drawIndexes[out->firstIndex+j*3 + 2] );
+				}
+			}*/
 		}
 
 		out->lightmapNum[0] = in->lightmaptexturenum;
@@ -3516,7 +3868,7 @@ bspFile_t *BSP_LoadDK( const bspFormat_t *format, const char *name, const void *
 						// surface can be appended into the surfaces list.
 						// we'd still need to fix things up...
 
-						//surf->flags |= SURF_DRAWFOG;
+						surf->flags |= SURF_DRAWFOG;
 						//surf->brushnum = volumeNum;
 						//r_fogvolumes[volumeNum].hull.Add( ( void * ) surf );
 						surf->fogNum = k;

@@ -975,7 +975,7 @@ void SubdividePolygon( msurface_t *warpface, int numverts, vec3_t *verts )
 	int lnumverts;
 
 	// add a point in the center to help keep warp valid
-	//if( warpface->flags & SURF_DRAWFOG )
+	if( warpface->flags & SURF_DRAWFOG )
 	{
 		lnumverts = numverts;
 
@@ -1019,7 +1019,7 @@ void SubdividePolygon( msurface_t *warpface, int numverts, vec3_t *verts )
 			poly->verts[i].normal[2] = warpface->plane->normal[2];
 		}
 	}
-	/*else
+	else
 	{
 		lnumverts = numverts + 2;
 
@@ -1100,7 +1100,7 @@ void SubdividePolygon( msurface_t *warpface, int numverts, vec3_t *verts )
 		poly->verts[i + 1].normal[0] = warpface->plane->normal[0];
 		poly->verts[i + 1].normal[1] = warpface->plane->normal[1];
 		poly->verts[i + 1].normal[2] = warpface->plane->normal[2];
-	}*/
+	}
 }
 
 /*

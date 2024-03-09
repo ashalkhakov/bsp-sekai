@@ -526,6 +526,11 @@ typedef struct mnode_s
 	unsigned short		numsurfaces;
 } mnode_t;
 
+typedef struct {
+	unsigned short		firstsurface;
+	unsigned short		numsurfaces;
+} mnodeSurface_t;
+
 typedef struct mleaf_s
 {
 // common with node
@@ -3511,6 +3516,185 @@ static void ConvertSurfaces( bspFile_t *bsp, msurface_t *faces, int numFaces, mt
 	bsp->numSurfaces = numSurfaces;
 }
 
+#define LIGHTGRID_LIGHTMAP_SCALE 0.5
+
+vec3_t pointcolor;
+dplane_t *lightplane;			// used as shadow plane
+vec3_t lightspot;
+
+#define LIGHTGRID_STEP 128
+
+typedef struct {
+	mleaf_t		*leafs;
+	int			numLeafs;
+	dnode_t		*nodes;
+	mnodeSurface_t *nodeSurfaces;
+	int			numNodes;
+	dplane_t	*planes;
+	int			numPlanes;
+
+	msurface_t	*surfaces;
+	int			numSurfaces;
+
+	byte		*lightData;
+	int			lightmapScale;
+	byte		*areabits;
+
+	vec3_t		stepSize;
+	vec3_t		mins, maxs;
+
+	byte		*lightgrid;
+	int			numLightGridSamples;
+} worldLightState_t;
+
+/*
+======================
+RecursiveLightPoint
+
+======================
+*/
+int RecursiveLightPoint (worldLightState_t *state, int nodeIndex, vec3_t start, vec3_t end) {
+	const float ambientScale = LIGHTGRID_LIGHTMAP_SCALE * (1.f / 255.f);
+	float front, back, f;
+	int side, smax;
+	dplane_t *plane;
+	vec3_t mid;
+	msurface_t *surf;
+	int s, t, ds, dt, i, r;
+	mtexinfo_t *tex;
+	byte *lm;
+	mnodeSurface_t *nodeSurface;
+
+	dnode_t *node;
+
+	if (nodeIndex < 0)
+		return -1;	// didn't hit anything
+
+	node = &state->nodes[nodeIndex];
+
+	// calculate mid point
+
+	plane = &state->planes[node->planeNum];
+	front = DotProduct(start, plane->normal) - plane->dist;
+	back = DotProduct(end, plane->normal) - plane->dist;
+	side = front < 0.f;
+
+	if ((back < 0.f) == side)
+		return RecursiveLightPoint(state, node->children[side], start, end);
+
+	f = front / (front - back);
+
+	mid[0] = start[0] + (end[0] - start[0]) * f;
+	mid[1] = start[1] + (end[1] - start[1]) * f;
+	mid[2] = start[2] + (end[2] - start[2]) * f;
+
+	// go down front side
+	r = RecursiveLightPoint(state, node->children[side], start, mid);
+	if (r >= 0)
+		return r;	// hit something
+
+	if ((back < 0.f) == side)
+		return -1;	// didn't hit anuthing
+
+	// check for impact on this node
+	VectorCopy(mid, lightspot);
+	lightplane = plane;
+
+	nodeSurface = &state->nodeSurfaces[nodeIndex];
+	for (i = 0, surf = &state->surfaces[nodeSurface->firstsurface]; i < nodeSurface->numsurfaces; i++, surf++) {
+		
+		if (surf->flags & (SURF_DRAWTURB | SURF_SKY))
+			continue;	// no lightmaps
+
+		tex = surf->texinfo;
+
+		s = DotProduct(mid, tex->s) + tex->s_offset;
+		t = DotProduct(mid, tex->t) + tex->t_offset;
+
+		if (s < surf->texturemins[0] || t < surf->texturemins[1])
+			continue;
+
+		ds = s - surf->texturemins[0];
+		dt = t - surf->texturemins[1];
+
+		if (ds > surf->extents[0] || dt > surf->extents[1])
+			continue;
+		if (!surf->samples)
+			return 0;
+
+		ds /= state->lightmapScale;
+		dt /= state->lightmapScale;
+
+		smax = (surf->extents[0] / (int)state->lightmapScale) + 1;
+				
+		lm = surf->samples + (dt * smax + ds) * 3;
+		
+		pointcolor[0] = pointcolor[1] = pointcolor[2] = 0.0f;
+
+		pointcolor[0] = lm[0];
+		pointcolor[1] = lm[1];
+		pointcolor[2] = lm[2];
+
+		pointcolor[0] *= ambientScale;
+		pointcolor[1] *= ambientScale;
+		pointcolor[2] *= ambientScale;
+
+		return 1;
+	}
+	// go down back side
+	return RecursiveLightPoint(state, node->children[!side], mid, end);
+}
+
+void InitLightGrid (worldLightState_t *state) {
+	int i, x, y, z;
+	vec3_t p, end;
+	float r;
+	byte *b;
+
+	if (!state->lightData)
+		return;
+
+	state->stepSize[0] = LIGHTGRID_STEP;
+	state->stepSize[1] = LIGHTGRID_STEP;
+	state->stepSize[2] = LIGHTGRID_STEP;
+
+	vec3_t lightGridOrigin, lightGridBounds;
+	vec3_t maxs;
+	for ( i = 0 ; i < 3 ; i++ ) {
+		lightGridOrigin[i] = state->stepSize[i] * ceil( state->mins[i] / state->stepSize[i] );
+		maxs[i] = state->stepSize[i] * floor( state->maxs[i] / state->stepSize[i] );
+		lightGridBounds[i] = (maxs[i] - lightGridOrigin[i])/state->stepSize[i] + 1;
+	}
+
+	state->numLightGridSamples = lightGridBounds[0] * lightGridBounds[1] * lightGridBounds[2];
+	state->lightgrid = malloc( state->numLightGridSamples * sizeof( byte[8] ) );
+	memset( state->lightgrid, 0, state->numLightGridSamples * sizeof( byte[8] ) );
+	b = state->lightgrid;
+
+	for (x = 0; x < lightGridBounds[0]; x++) {
+		for (y = 0; y < lightGridBounds[1]; y++) {
+			for (z = 0; z < lightGridBounds[2]; z++) {
+				end[0] = p[0] = state->stepSize[0] * x + lightGridOrigin[0];
+				end[1] = p[1] = state->stepSize[1] * y + lightGridOrigin[1];
+				end[2] = (p[2] = state->stepSize[2] * z + lightGridOrigin[2]) - 2048;
+				r = RecursiveLightPoint(state, 0, p, end);
+				if (r < 0.1)
+					r = 0.1;
+				if (r != -1) {
+					for (i = 0; i < 3; i++) {
+						float mu = pointcolor[i];
+						float f = mu * (2 * (1 - mu) + mu);
+						*b++ = 255.0 * f;
+					}
+					b += 5;
+				} else {
+					b += 8;
+				}
+			}
+		}
+	}
+}
+
 static qboolean outputJKA = qfalse; // TODO: make it truly switchable
 
 bspFile_t *BSP_LoadDK( const bspFormat_t *format, const char *name, const void *data, int length ) {
@@ -3596,6 +3780,7 @@ bspFile_t *BSP_LoadDK( const bspFormat_t *format, const char *name, const void *
 
 	int numNodes = GetLumpElements( &header, LUMP_NODES, sizeof ( realDnode_t ) );
 	mnode_t *nodes = malloc( numNodes * sizeof ( *nodes ) );
+	mnodeSurface_t *nodeSurfaces = malloc( numNodes * sizeof( *nodeSurfaces ) );
 
 	bsp->numSubmodels = GetLumpElements( &header, LUMP_MODELS, sizeof( realDmodel_t ) );
 	bsp->submodels = malloc( bsp->numSubmodels * sizeof( *bsp->submodels ) );
@@ -3905,8 +4090,9 @@ bspFile_t *BSP_LoadDK( const bspFormat_t *format, const char *name, const void *
 	{
 		realDnode_t		*in = GetLump( &header, data, LUMP_NODES );
 		dnode_t 	*out = bsp->nodes;
+		mnodeSurface_t *outSurface = nodeSurfaces;
 
-		for ( i=0 ; i<numNodes ; i++, in++, out++)
+		for ( i=0 ; i<numNodes ; i++, in++, out++, outSurface++)
 		{
 			out->mins[0] = LittleShort( in->mins[0] );
 			out->maxs[0] = LittleShort( in->maxs[0] );
@@ -3927,6 +4113,9 @@ bspFile_t *BSP_LoadDK( const bspFormat_t *format, const char *name, const void *
 
 			out->children[0] = LittleLong(in->children[0]);
 			out->children[1] = LittleLong(in->children[1]);
+
+			outSurface->firstsurface = LittleShort(in->firstface);
+			outSurface->numsurfaces = LittleShort(in->numfaces);
 		}
 	}
 
@@ -4043,6 +4232,32 @@ bspFile_t *BSP_LoadDK( const bspFormat_t *format, const char *name, const void *
 		}
 	}
 
+	static worldLightState_t worldLightState;
+	memset( &worldLightState, 0, sizeof( worldLightState ) );
+	worldLightState.leafs = leafs;
+	worldLightState.numLeafs = numLeafs;
+	worldLightState.nodes = bsp->nodes;
+	worldLightState.nodeSurfaces = nodeSurfaces;
+	worldLightState.numNodes = bsp->numNodes;
+	worldLightState.planes = bsp->planes;
+	worldLightState.numPlanes = bsp->numPlanes;
+	worldLightState.surfaces = faces;
+	worldLightState.numSurfaces = numFaces;
+	worldLightState.lightData = lightmapData;
+	worldLightState.lightmapScale = 16;
+	VectorCopy( bsp->submodels[0].mins, worldLightState.mins );
+	VectorCopy( bsp->submodels[0].maxs, worldLightState.maxs );
+	
+	InitLightGrid(&worldLightState);
+	if ( lightmapData ) {
+		bsp->defaultLightGridSize[0] = worldLightState.stepSize[0];
+		bsp->defaultLightGridSize[1] = worldLightState.stepSize[1];
+		bsp->defaultLightGridSize[2] = worldLightState.stepSize[2];
+
+		bsp->lightGridData = worldLightState.lightgrid;
+		bsp->numGridPoints = worldLightState.numLightGridSamples;
+	}
+
 	skybox_t skybox;
 	ConvertEntityString( mapname, bsp, data, &header, &skybox, bsp->submodels[0].mins, bsp->submodels[0].maxs );
 
@@ -4066,6 +4281,7 @@ bspFile_t *BSP_LoadDK( const bspFormat_t *format, const char *name, const void *
 	free(leafBrushes);
 	free(brushes);
 	free(nodes);
+	free(nodeSurfaces);
 	free(verts);
 	free(shaders);
 	//free(areas);

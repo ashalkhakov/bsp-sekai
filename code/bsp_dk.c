@@ -2021,6 +2021,19 @@ decoInfo_t *GetDeco( int episode, const char *name ) {
 	return NULL;	
 }
 
+static void dkent_light( entity_t *ent ) {
+	epair_t pairs[] = {
+		{ NULL, "_color", "color" }
+	};
+
+	int		spawnflags = IntegerForKey( ent, "spawnflags" );
+
+	RenameKeys( ent, sizeof( pairs ) / sizeof( *pairs ), pairs );
+
+	SetKeyValue( ent, "classname", "dlight" );
+	SetKeyValue( ent, "stylestring", "a" );
+}
+
 // JKA misc_model_breakable spawnflags
 #define BR_FLAGS_SOLID			1 // Movement is blocked by it, if not set, can still be broken by explosions and shots if it has health
 #define BR_FLAGS_AUTOANIMATE	2 // Will cycle it's anim
@@ -2248,7 +2261,7 @@ static void ProcessEntity( const char *mapname, vec3_t worldMins, vec3_t worldMa
 		dkent_deco_e1( ent );
 	}
 	else if (!strcmp(className, "light")) {
-		// keep it
+		dkent_light( ent );
 	}
 	else if (!strcmp(className, "trigger_hurt")) {
 		dkent_trigger_hurt( ent );

@@ -667,9 +667,6 @@ static void fprint_shader( FILE *fp, shader_t *shader ) {
 			fprintf( fp, "\t\tblendFunc filter\n");
 			fprintf( fp, "\t\tdepthFunc equal\n" );
 			fprintf( fp, "\t\ttcGen lightmap\n" );
-			if ( shader->simplifiedShaderParms.alphaGenConst != 1.0f || shader->simplifiedShaderParms.blend != BT_NONE ) {
-				fprintf( fp, "\t\tdepthFunc equal\n" );
-			}
 			fprintf( fp, "\t}\n" );
 		}
 		break;

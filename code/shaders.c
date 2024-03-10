@@ -628,6 +628,16 @@ static void fprint_shader( FILE *fp, shader_t *shader ) {
 				fprintf( fp, "\tcull none\n" );
 				break;
 		}
+		switch ( shader->simplifiedShaderParms.blend ) {
+			case BT_NONE:
+				break;
+			case BT_ALPHATEST:
+				fprintf( fp, "\tsort seethrough\n" );
+				break;
+			case BT_BLEND:
+				fprintf( fp, "\tsort additive\n" );
+				break;
+		}
 
 		fprintf( fp, "\t{\n" );
 		fprintf( fp, "\t\tmap %s\n", shader->diffuseMap );
@@ -635,7 +645,7 @@ static void fprint_shader( FILE *fp, shader_t *shader ) {
 			case BT_NONE:
 				break;
 			case BT_ALPHATEST:
-				fprintf( fp, "\t\talphaFunc GT0\n" );
+				fprintf( fp, "\t\talphaFunc GE128\n" );
 				fprintf( fp, "\t\tdepthWrite\n" );
         		fprintf( fp, "\t\tdepthFunc lequal\n" );
 				break;
@@ -654,8 +664,12 @@ static void fprint_shader( FILE *fp, shader_t *shader ) {
 		if ( shader->simplifiedShaderParms.lightmapped ) {
 			fprintf( fp, "\t{\n" );
 			fprintf( fp, "\t\tmap $lightmap\n" );
-			fprintf( fp, "\t\tblendFunc GL_DST_COLOR GL_ZERO\n");
+			fprintf( fp, "\t\tblendFunc filter\n");
 			fprintf( fp, "\t\tdepthFunc equal\n" );
+			fprintf( fp, "\t\ttcGen lightmap\n" );
+			if ( shader->simplifiedShaderParms.alphaGenConst != 1.0f || shader->simplifiedShaderParms.blend != BT_NONE ) {
+				fprintf( fp, "\t\tdepthFunc equal\n" );
+			}
 			fprintf( fp, "\t}\n" );
 		}
 		break;

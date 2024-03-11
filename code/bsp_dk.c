@@ -1624,7 +1624,7 @@ static void dkent_target_speaker( entity_t *ent )
 	// MISSING: volume support in quake3
 
 	// fixup paths for all sounds
-	AppendKeyValueMatching( ent, "sound", "sounds\\" );
+	AppendKeyValueMatching( ent, "sound", "sounds/" );
 
 	// set the noise key for compat with quake3 and jka
 	sound1 = ValueForKey( ent, "sound1" );
@@ -3027,7 +3027,7 @@ static void ProcessTexInfo( bspFile_t *bsp, const void *data, dheader_t *header,
 			// even if it has a texture, it is not meant to be drawn
 			out->skip = qtrue;
 		}
-		else if (out->flags & SURF_NODRAW)
+		else if (out->flags & (SURF_NODRAW|SURF_HINT|SURF_SKIP))
 		{
 			out->skip = qtrue; // not meant to be drawn
 		}
@@ -3073,7 +3073,7 @@ static int TexInfoToShaders(
 ) {
 	int							i, j;
 	int							numShaders;
-	mtexinfo_t					*texinfo;
+	mtexinfo_t					*texinfo, *texinfoFrame;
 	mshader_t					*out;
 	char						outShader[MAX_QPATH];
 	char						customName[MAX_QPATH], tempName[MAX_QPATH];
@@ -3243,6 +3243,13 @@ static int TexInfoToShaders(
 		} else {
 			Q_strncpyz( tempName, outShader, sizeof( tempName ) );
 		}
+
+		/*if ( texinfo->numframes > 0 ) {
+			for (texinfoFrame = texinfo->next ; texinfoFrame && texinfoFrame != texinfo ; texinfoFrame=texinfoFrame->next)
+			{
+				Com_Printf("frame: %s\n", texinfoFrame->image->name);
+			}
+		}*/
 
 		snprintf( customName, sizeof( customName ), "%s%s%s%s%s%s%s",
 			tempName,
@@ -4139,7 +4146,7 @@ bspFile_t *BSP_LoadDK( const bspFormat_t *format, const char *name, const void *
 		dleaf_t *out = &bsp->leafs[i];
 
 		out->cluster = in->cluster;
-		out->area = in->area;
+		out->area = in->area - 1; // DK: area 0 is like "no area". Q3 uses -1 for that.
 
 		//Com_Printf("%d\n", in->contents);
 

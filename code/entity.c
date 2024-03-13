@@ -639,6 +639,7 @@ void AppendKeyValueMatching( entity_t *ent, const char *keyPrefix, const char *v
 	epair_t	*ep;
 	int n = strlen( keyPrefix );
 	char newstring[MAX_QPATH];
+	char *ns;
 	
 	for (ep=ent->epairs ; ep ; ep=ep->next) {
 		if (strncmp (ep->key, keyPrefix, n ) ) {
@@ -648,6 +649,15 @@ void AppendKeyValueMatching( entity_t *ent, const char *keyPrefix, const char *v
 		newstring[0] = '\0';
 		Q_strcat( newstring, sizeof( newstring ), valuePrefix );
 		Q_strcat( newstring, sizeof( newstring ), ep->value );
+
+		// fix up the paths
+		ns = newstring;
+		while ( *ns ) {
+			if (*ns == '\\') {
+				*ns = '/';
+			}
+			ns++;
+		}
 
 		free (ep->value);
 		ep->value = copystring(newstring);

@@ -2244,7 +2244,7 @@ static void dkent_worldspawn( const char *mapname, vec3_t worldMins, vec3_t worl
 	SetKeyInteger( ent, "_keeplights", 1 );
 }
 
-static void ProcessEntity( const char *mapname, vec3_t worldMins, vec3_t worldMaxs, int entityNum, entity_t *ent )
+static void ProcessEntity( bspFile_t *bsp, const char *mapname, vec3_t worldMins, vec3_t worldMaxs, int entityNum, entity_t *ent )
 {
 	const char *className = ValueForKey(ent, "classname");
 
@@ -2280,7 +2280,7 @@ static void ProcessEntity( const char *mapname, vec3_t worldMins, vec3_t worldMa
 		// keep it
 	}
 	//else if (!strcmp(className, "func_areaportal")) {
-	//	// keep it
+	//	// remove it
 	//}
 	else if (!strcmp(className, "func_button")) {
 		// keep it
@@ -2295,6 +2295,10 @@ static void ProcessEntity( const char *mapname, vec3_t worldMins, vec3_t worldMa
 		sprintf( door_name, "door%d", entityNum );
 
 		SetKeyValue( ent, "team", door_name );
+		AppendKeyValueMatching( ent, "sound_close_finish", "sounds/" );
+		AppendKeyValueMatching( ent, "sound_open_finish", "sounds/" );
+		AppendKeyValueMatching( ent, "sound_closing", "sounds/" );
+		AppendKeyValueMatching( ent, "sound_opening", "sounds/" );
 	}
 	else if (!strcmp(className, "func_timer")) {
 		// keep it
@@ -2343,7 +2347,7 @@ static void ConvertEntityString(const char *mapname, bspFile_t *bsp, const void 
 
 	int numEntities = NumEntities();
 	for (int i = 0; i < numEntities; i++) {
-		ProcessEntity( mapname, worldMins, worldMaxs, i, GetEntityNum( i ) );
+		ProcessEntity( bsp, mapname, worldMins, worldMaxs, i, GetEntityNum( i ) );
 		// PrintEntity( GetEntityNum( i ) );
 	}
 	if ( numEntities >= 1)
@@ -2595,8 +2599,8 @@ static void OutputTexInfoShaders( const char *basename, msurface_t *faces, int n
 			continue;
 		}
 
-		printf("interesting surf: %s\n", tex->image->name );
-		PrintTexInfoSurfaceFlags(tex);
+		//printf("interesting surf: %s\n", tex->image->name );
+		//PrintTexInfoSurfaceFlags(tex);
 /*
 		sprintf (line, "texinfo_%d\n", tex->shaderNum);
 		AppendToBuffer( &stringbuf, line );
@@ -3153,13 +3157,16 @@ static int TexInfoToShaders(
 			}
 
 			if ( texinfo->flags & SURF_WARP ) {
+				// FIXME: we can't really figure out if it's supposed to be water or not
+				// based on SURF_WARP alone. we know it's nonsolid, but is it water? it may or may not be!
+				// - we need to know which surfaces use this texinfo, and which content flags they have
+				// so we will override content flags based on brush contents later
 				if ( !outputJKA ) {
-					contentFlags = Q3_CONTENTS_TRANSLUCENT | Q3_CONTENTS_WATER;
+					contentFlags = Q3_CONTENTS_TRANSLUCENT;// | Q3_CONTENTS_WATER;
 				} else {
-					contentFlags = JKA_CONTENTS_TRANSLUCENT | JKA_CONTENTS_WATER;
+					contentFlags = JKA_CONTENTS_TRANSLUCENT;// | JKA_CONTENTS_WATER;
 				}
-			}
-			else if ( ( texinfo->flags & SURF_TRANS33 ) || ( texinfo->flags & SURF_TRANS66 ) ) {
+			} else if ( texinfo->flags & ( SURF_TRANS33 | SURF_TRANS66 ) ) {
 				if ( !outputJKA ) {
 					contentFlags = Q3_CONTENTS_TRANSLUCENT;
 				} else {
@@ -3940,6 +3947,7 @@ bspFile_t *BSP_LoadDK( const bspFormat_t *format, const char *name, const void *
 		realDbrush_t	*in = GetLump( &header, data, LUMP_BRUSHES );
 		dbrush_t		*out;
 		int				contents;
+		int				contentFlags;
 
 		if (numBrushes > MAX_MAP_BRUSHES)
 			Com_Error (ERR_DROP, "Map has too many brushes");
@@ -3950,16 +3958,28 @@ bspFile_t *BSP_LoadDK( const bspFormat_t *format, const char *name, const void *
 			out->numSides = LittleLong( in->numsides );
 			
 			contents = LittleLong( in->contents );
+			if ( outputJKA ) {
+				contentFlags = DK_ContentsToJKA( contents );
+			} else {
+				contentFlags = DK_ContentsToQuake3( contents );
+			}
 
-			// HACK: for ladders. Q2/DK use contents for a ladder brush,
-			// but Q3 uses surface flags for that.
-			// the issue is that we should have already defined shaders at this point.
-			if ( contents & CONTENTS_LADDER ) {
-				for (j = 0; j < out->numSides; j++) {
-					dbrushside_t *side = &bsp->brushSides[ out->firstSide + j ];
+			for (j = 0; j < out->numSides; j++) {
+				dbrushside_t *side = &bsp->brushSides[ out->firstSide + j ];
 
+				// HACK: for ladders. Q2/DK use contents for a ladder brush,
+				// but Q3 uses surface flags for that.
+				// the issue is that we should have already defined shaders at this point.
+				if ( contents & CONTENTS_LADDER ) {
 					bsp->shaders[side->shaderNum].surfaceFlags |= Q3_SURF_LADDER;
 				}
+
+				// HACK: we don't know at the point of shader definition
+				// if it should be e.g. water or not.
+				// TODO: brushes should be the source of truth regarding content flags.
+				// content flags should flow like this:
+				//    brush -> brushside -> face -> texinfo -> shader
+				bsp->shaders[side->shaderNum].contentFlags = contentFlags;
 			}
 			
 			out->shaderNum = bsp->brushSides[out->firstSide].shaderNum;
@@ -4208,7 +4228,7 @@ bspFile_t *BSP_LoadDK( const bspFormat_t *format, const char *name, const void *
 			//if (i >= 5 && i <= 49) {
 			//	MarkOutside( outsideShaderNum, bsp->brushes, bsp->brushSides, bsp->leafBrushes, bsp->nodes, bsp->leafs, 0, out );
 			//}
-			/*
+			
 			int	firstBrush, lastBrush;
 
 			firstBrush = bsp->numBrushes, lastBrush = 0;
@@ -4220,7 +4240,7 @@ bspFile_t *BSP_LoadDK( const bspFormat_t *format, const char *name, const void *
 				out->firstBrush = firstBrush;
 				out->numBrushes = lastBrush + 1 - firstBrush;
 			}
-			else*/
+			else
 			{
 				out->firstBrush = 0;
 				out->numBrushes = 0;

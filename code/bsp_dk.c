@@ -1535,6 +1535,8 @@ static void SkyBoxFree( skybox_t *box ) {
 		free( box->cloudname );
 }
 
+static qboolean globalFog = qfalse;
+
 static void SkyboxFromEntity( skybox_t *box, entity_t *ent ) {
 	const char *sky;
 	const char *cloudname;
@@ -1561,25 +1563,29 @@ static void SkyboxFromEntity( skybox_t *box, entity_t *ent ) {
 		if ( *cloudname ) {
 			box->cloudname = copystring( cloudname );
 
-			SkyBoxSetupLayer( box, 0, 1, timeval * box->cloud1tile / box->cloud1speed, 1);
+			// 2x scale looks closer to DK but you can also notice the skybox curvature
+			SkyBoxSetupLayer( box, 0, 2, timeval * box->cloud1tile / box->cloud1speed, 1);
 			if ( box->cloud2alpha > 0 ) {
 				float alpha = (box->cloud2alpha < 1 ? box->cloud2alpha : 1);
-				SkyBoxSetupLayer( box, 1, box->cloud2tile/box->cloud1tile, timeval * box->cloud2tile/box->cloud2speed, alpha );
+				SkyBoxSetupLayer( box, 1, 2.0 * box->cloud2tile/box->cloud1tile, timeval * box->cloud2tile/box->cloud2speed, alpha );
 			}
 		}
 	}
 
-	box->fogValue = IntegerForKey( ent, "fog_value" );
-	if ( box->fogValue ) {
-		box->fogStart = FloatForKey( ent, "fog_start" );
-		box->fogEnd = FloatForKey( ent, "fog_end" );
-		box->fogSkyEnd = FloatForKey( ent, "fog_skyend" );
-		if ( GetVectorForKey( ent, "fog_color", box->fogColor ) ) {
-			box->fogColor[0] *= 1.0f / 255.0f;
-			box->fogColor[1] *= 1.0f / 255.0f;
-			box->fogColor[2] *= 1.0f / 255.0f;
+	if ( globalFog ) {
+		// doesn't look very good
+		box->fogValue = IntegerForKey( ent, "fog_value" );
+		if ( box->fogValue ) {
+			box->fogStart = FloatForKey( ent, "fog_start" );
+			box->fogEnd = FloatForKey( ent, "fog_end" );
+			box->fogSkyEnd = FloatForKey( ent, "fog_skyend" );
+			if ( GetVectorForKey( ent, "fog_color", box->fogColor ) ) {
+				box->fogColor[0] *= 1.0f / 255.0f;
+				box->fogColor[1] *= 1.0f / 255.0f;
+				box->fogColor[2] *= 1.0f / 255.0f;
+			}
+			GetVectorForKey( ent, "_color", box->fogColor );
 		}
-		GetVectorForKey( ent, "_color", box->fogColor );
 	}
 }
 
@@ -2204,6 +2210,49 @@ static void dkent_effect_rain( entity_t *ent ) {
 	//SetKeyValue( ent, "spawnflags", "1" ); // light
 }
 
+static void dkent_func_rotate( entity_t *ent ) {
+	epair_t pairs[] = {
+		{ NULL, "dmg", "damage" }
+	};
+
+	RenameKeys( ent, sizeof( pairs ) / sizeof( *pairs ), pairs );
+
+	SetKeyValue( ent, "classname", "func_rotating" );
+	
+	// remap spawnflags
+	int dkSpawnflags = IntegerForKey( ent, "spawnflags" );
+	int q3Spawnflags = 0;
+
+	const char *model = ValueForKey( ent, "model" );
+
+	// ROTATE_ON
+	if ( ( dkSpawnflags & 1 ) ) {
+	} else {
+		//if ( !strcmp(model, "*36") )
+		Com_Printf("start off\n");
+		q3Spawnflags |= 32;
+	}
+	// reverse
+	if ( dkSpawnflags & 2 ) {
+		q3Spawnflags |= 2;
+	}
+	// z axis
+	if ( dkSpawnflags & 4 ) {
+		q3Spawnflags |= 4;
+	}
+	// y axis
+	if ( dkSpawnflags & 8 ) {
+		q3Spawnflags |= 8;
+	}
+
+	SetKeyInteger( ent, "spawnflags", q3Spawnflags );
+}
+
+static void dkent_trigger_once( entity_t *ent ) {
+	SetKeyValue( ent, "wait", "-1" );
+	SetKeyValue( ent, "classname", "trigger_multiple" );
+}
+
 static void dkent_worldspawn( const char *mapname, vec3_t worldMins, vec3_t worldMaxs, entity_t *ent )
 {
 	int			i;
@@ -2299,8 +2348,13 @@ static void ProcessEntity( bspFile_t *bsp, const char *mapname, vec3_t worldMins
 		AppendKeyValueMatching( ent, "sound_open_finish", "sounds/" );
 		AppendKeyValueMatching( ent, "sound_closing", "sounds/" );
 		AppendKeyValueMatching( ent, "sound_opening", "sounds/" );
-	}
-	else if (!strcmp(className, "func_timer")) {
+	} else if (!strcmp(className, "func_door_rotating")) {
+		// keep it
+	} else if (!strcmp(className, "func_train")) {
+		// keep it
+	} else if (!strcmp(className, "func_rotate")) {
+		dkent_func_rotate( ent );
+	} else if (!strcmp(className, "func_timer")) {
 		// keep it
 		/* DK:
 ///////////////////////////////////////////////////////////////////////////////
@@ -2318,8 +2372,9 @@ static void ProcessEntity( bspFile_t *bsp, const char *mapname, vec3_t worldMins
 //
 ///////////////////////////////////////////////////////////////////////////////
 		*/
-	}
-	else {
+	} else if (!strcmp(className, "trigger_once")) {
+		dkent_trigger_once( ent );
+	} else {
 		// remove it
 		FreeEntity( ent );
 	}

@@ -2226,10 +2226,7 @@ static void dkent_func_rotate( entity_t *ent ) {
 	const char *model = ValueForKey( ent, "model" );
 
 	// ROTATE_ON
-	if ( ( dkSpawnflags & 1 ) ) {
-	} else {
-		//if ( !strcmp(model, "*36") )
-		Com_Printf("start off\n");
+	if ( !( dkSpawnflags & 1 ) ) {
 		q3Spawnflags |= 32;
 	}
 	// reverse
@@ -2248,9 +2245,54 @@ static void dkent_func_rotate( entity_t *ent ) {
 	SetKeyInteger( ent, "spawnflags", q3Spawnflags );
 }
 
+#define	FUNCWALL_TRIGGER_SPAWN	0x01
+#define	FUNCWALL_TOGGLE			0x02
+#define	FUNCWALL_START_ON		0x04
+#define	FUNCWALL_ANIM_ALL		0x08
+#define	FUNCWALL_ANIM_FAST		0x10
+#define	FUNCWALL_NOT_SOLID		0x20
+#define FUNCWALL_CTF			0x40
+
+static void dkent_func_wall( entity_t *ent ) {
+	SetKeyValue( ent, "classname", "func_static" );
+
+	// func_wall:
+	// health
+	// targetname, target, killtarget
+	// delay
+	// cinescript, aiscript
+	int dkSpawnflags = IntegerForKey( ent, "spawnflags" );
+	int q3Spawnflags = 0;
+
+	if ( !( dkSpawnflags & FUNCWALL_START_ON ) ) {
+		q3Spawnflags |= 1;
+	}
+
+	SetKeyInteger( ent, "spawnflags", q3Spawnflags );
+}
+
 static void dkent_trigger_once( entity_t *ent ) {
 	SetKeyValue( ent, "wait", "-1" );
 	SetKeyValue( ent, "classname", "trigger_multiple" );
+}
+
+static void dkent_item_health_25( entity_t *ent ) {
+	SetKeyValue( ent, "classname", "item_health" );
+}
+static void dkent_item_health_50( entity_t *ent ) {
+	SetKeyValue( ent, "classname", "item_health_large" );
+}
+static void dkent_item_goldensoul( entity_t *ent ) {
+	SetKeyValue( ent, "classname", "item_health_mega" );
+}
+static void dkent_item_plasteel_armor( entity_t *ent ) {
+	SetKeyValue( ent, "classname", "item_armor_combat" );
+}
+static void dkent_item_chromatic_armor( entity_t *ent ) {
+	SetKeyValue( ent, "classname", "item_armor_body" );
+}
+static void dkent_item_wraithorb( entity_t *ent ) {
+	SetKeyValue( ent, "classname", "item_invis" );
 }
 
 static void dkent_worldspawn( const char *mapname, vec3_t worldMins, vec3_t worldMaxs, entity_t *ent )
@@ -2352,8 +2394,12 @@ static void ProcessEntity( bspFile_t *bsp, const char *mapname, vec3_t worldMins
 		// keep it
 	} else if (!strcmp(className, "func_train")) {
 		// keep it
+	} else if (!strcmp(className, "path_corner")) {
+		// keep it
 	} else if (!strcmp(className, "func_rotate")) {
 		dkent_func_rotate( ent );
+	//} else if (!strcmp(className, "func_wall")) {
+	//	dkent_func_wall( ent );
 	} else if (!strcmp(className, "func_timer")) {
 		// keep it
 		/* DK:
@@ -2374,6 +2420,18 @@ static void ProcessEntity( bspFile_t *bsp, const char *mapname, vec3_t worldMins
 		*/
 	} else if (!strcmp(className, "trigger_once")) {
 		dkent_trigger_once( ent );
+	} else if (!strcmp(className, "item_health_25")) {
+		dkent_item_health_25( ent );
+	} else if (!strcmp(className, "item_health_50")) {
+		dkent_item_health_50( ent );
+	} else if (!strcmp(className, "item_goldensoul")) {
+		dkent_item_goldensoul( ent );
+	} else if (!strcmp(className, "item_plasteel_armor")) {
+		dkent_item_plasteel_armor( ent );
+	} else if (!strcmp(className, "item_chromatic_armor")) {
+		dkent_item_chromatic_armor( ent );
+	} else if (!strcmp(className, "item_wraithorb")) {
+		dkent_item_wraithorb( ent );
 	} else {
 		// remove it
 		FreeEntity( ent );

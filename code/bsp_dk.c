@@ -447,6 +447,7 @@ typedef struct mtexinfo_s
 	struct mtexinfo_s	*hash_next;
 	qboolean			skip; // this should not be rendered at all (e.g. clip)
 	int					shaderNum;
+	qboolean			generatedShader;	// shader name comes from DK_GeneratedShaderName
 } mtexinfo_t;
 
 typedef struct glpoly_s
@@ -716,13 +717,43 @@ void CalcSurfaceExtents( float *vertexes, medge_t *edges, int *surfEdges, msurfa
 	}
 }
 
+/*
+================
+DK_SetPolyVertex
+
+Texture and lightmap coordinates, normal and colour of a point on a surface.
+The surface's lightmap block must be allocated already.
+================
+*/
+static void DK_SetPolyVertex( const msurface_t *pSurf, const vec3_t vec, drawVert_t *out )
+{
+	float s, t;
+
+	VectorCopy( vec, out->xyz );
+
+	s = DotProduct( vec, pSurf->texinfo->s ) + pSurf->texinfo->s_offset;
+	t = DotProduct( vec, pSurf->texinfo->t ) + pSurf->texinfo->t_offset;
+	out->st[0] = s / pSurf->texinfo->image->width;
+	out->st[1] = t / pSurf->texinfo->image->height;
+
+	// luxel centres sit 8 units into each 16 unit cell of the 128 luxel block
+	out->lightmap[0][0] = ( s - pSurf->texturemins[0] + pSurf->light_s * 16 + 8 ) / ( LIGHTMAP_SIZE * 16 );
+	out->lightmap[0][1] = ( t - pSurf->texturemins[1] + pSurf->light_t * 16 + 8 ) / ( LIGHTMAP_SIZE * 16 );
+
+	VectorCopy( pSurf->plane->normal, out->normal );
+
+	out->color[0][0] = pSurf->texinfo->color[0];
+	out->color[0][1] = pSurf->texinfo->color[1];
+	out->color[0][2] = pSurf->texinfo->color[2];
+	out->color[0][3] = 255;
+}
+
 void GL_BuildPolygonFromSurface( float *vertexes, medge_t *pedges, int *surfedges, msurface_t *pSurf )
 {
 	int			i, lindex, lnumverts;
 	medge_t		*r_pedge;
 //	int			vertpage;
 	vec3_t		vec;
-	float		s, t;
 	glpoly_t	*poly;
 	vec3_t		total;
 
@@ -761,52 +792,139 @@ void GL_BuildPolygonFromSurface( float *vertexes, medge_t *pedges, int *surfedge
 			vec[2] = vertexes[r_pedge->v[1] * 3 + 2];
 		}
 
-		// SCG[6/3/99]: Find the s coord for this vert
-		s = DotProduct( vec, pSurf->texinfo->s ) + pSurf->texinfo->s_offset;
-
-		// SCG[6/3/99]: normalize it
-		s /= pSurf->texinfo->image->width;
-
-		// SCG[6/3/99]: Find the t coord for this vert
-		t = DotProduct( vec, pSurf->texinfo->t ) + pSurf->texinfo->t_offset;
-
-		// SCG[6/3/99]: normalize it
-		t /= pSurf->texinfo->image->height;
-
 		total[0] = total[0] + vec[0];
 		total[1] = total[1] + vec[1];
 		total[2] = total[2] + vec[2];
-		poly->verts[i].xyz[0] = vec[0];
-		poly->verts[i].xyz[1] = vec[1];
-		poly->verts[i].xyz[2] = vec[2];
-		poly->verts[i].st[0] = s;
-		poly->verts[i].st[1] = t;
-
-		//
-		// lightmap texture coordinates
-		//
-		s = DotProduct( vec, pSurf->texinfo->s ) + pSurf->texinfo->s_offset;
-		s -= pSurf->texturemins[0];
-		s += pSurf->light_s * 16;
-		s += 8;
-		s /= 2048;	// SCG[6/9/99]: 2048 = BLOCK_WIDTH * 16
-		//s /= (pSurf->extents[0] - pSurf->texturemins[0]);
-	
-		t = DotProduct( vec, pSurf->texinfo->t ) + pSurf->texinfo->t_offset;
-		t -= pSurf->texturemins[1];
-		t += pSurf->light_t * 16;
-		t += 8;
-		t /= 2048;	// SCG[6/9/99]: 2048 = BLOCK_WIDTH * 16
-		//t /= (pSurf->extents[1] - pSurf->texturemins[1]);
-
-		poly->verts[i].lightmap[0][0] = s;
-		poly->verts[i].lightmap[0][1] = t;
-		
-		poly->verts[i].normal[0] = pSurf->plane->normal[0];
-		poly->verts[i].normal[1] = pSurf->plane->normal[1];
-		poly->verts[i].normal[2] = pSurf->plane->normal[2];
+		DK_SetPolyVertex( pSurf, vec, &poly->verts[i] );
 	}
 }
+
+/*
+================
+DK_SubdividePolygon
+
+Quake 2's SubdividePolygon: cut a convex polygon on a grid until no piece
+crosses a grid line, adding the pieces to the surface's poly chain.
+================
+*/
+#define DK_SUBDIVIDE_SIZE	64		// gl_subdivide_size, what Daikatana cuts warping faces into
+#define DK_SUBDIVIDE_VERTS	64
+
+static void DK_SubdividePolygon( msurface_t *surf, int numverts, vec3_t *verts )
+{
+	vec3_t		mins, maxs, front[DK_SUBDIVIDE_VERTS], back[DK_SUBDIVIDE_VERTS];
+	float		dist[DK_SUBDIVIDE_VERTS + 1], m, frac;
+	int			i, j, f, b;
+	glpoly_t	*poly;
+
+	if ( numverts > DK_SUBDIVIDE_VERTS - 4 )
+		Com_Error( ERR_DROP, "DK_SubdividePolygon: too many vertexes (%d)", numverts );
+
+	VectorCopy( verts[0], mins );
+	VectorCopy( verts[0], maxs );
+	for ( i = 1; i < numverts; i++ )
+	{
+		for ( j = 0; j < 3; j++ )
+		{
+			mins[j] = verts[i][j] < mins[j] ? verts[i][j] : mins[j];
+			maxs[j] = verts[i][j] > maxs[j] ? verts[i][j] : maxs[j];
+		}
+	}
+
+	for ( i = 0; i < 3; i++ )
+	{
+		m = DK_SUBDIVIDE_SIZE * floor( ( mins[i] + maxs[i] ) * 0.5f / DK_SUBDIVIDE_SIZE + 0.5f );
+		if ( maxs[i] - m < 8 || m - mins[i] < 8 )
+			continue;
+
+		for ( j = 0; j < numverts; j++ )
+			dist[j] = verts[j][i] - m;
+		dist[j] = dist[0];
+
+		f = b = 0;
+		for ( j = 0; j < numverts; j++ )
+		{
+			vec3_t *next = &verts[( j + 1 ) % numverts];
+
+			if ( dist[j] >= 0 ) {
+				VectorCopy( verts[j], front[f] );
+				f++;
+			}
+			if ( dist[j] <= 0 ) {
+				VectorCopy( verts[j], back[b] );
+				b++;
+			}
+			if ( dist[j] == 0 || dist[j + 1] == 0 )
+				continue;
+			if ( ( dist[j] > 0 ) != ( dist[j + 1] > 0 ) )
+			{
+				frac = dist[j] / ( dist[j] - dist[j + 1] );
+				front[f][0] = back[b][0] = verts[j][0] + frac * ( (*next)[0] - verts[j][0] );
+				front[f][1] = back[b][1] = verts[j][1] + frac * ( (*next)[1] - verts[j][1] );
+				front[f][2] = back[b][2] = verts[j][2] + frac * ( (*next)[2] - verts[j][2] );
+				f++;
+				b++;
+			}
+		}
+
+		DK_SubdividePolygon( surf, f, front );
+		DK_SubdividePolygon( surf, b, back );
+		return;
+	}
+
+	poly = AllocGLPoly( numverts );
+	poly->numverts = numverts;
+	poly->next = surf->polys;
+	surf->polys = poly;
+	for ( i = 0; i < numverts; i++ )
+		DK_SetPolyVertex( surf, verts[i], &poly->verts[i] );
+}
+
+/*
+================
+DK_SubdivideWarpSurface
+
+Daikatana cuts warping faces into 64 unit pieces at load. Their vertexes
+carry the surge waves (deformVertexes) and the vertex lighting of
+translucent water.
+================
+*/
+static void DK_SubdivideWarpSurface( msurface_t *surf )
+{
+	glpoly_t	*outline = surf->polys;
+	vec3_t		verts[DK_SUBDIVIDE_VERTS];
+	int			i;
+
+	vec3_t		area, e1, e2;
+	int			j;
+
+	if ( outline->numverts > DK_SUBDIVIDE_VERTS - 4 )
+		return;
+
+	for ( i = 0; i < outline->numverts; i++ )
+		VectorCopy( outline->verts[i].xyz, verts[i] );
+
+	// skip faces without area, the subdivision can't cut them
+	area[0] = area[1] = area[2] = 0;
+	for ( i = 2; i < outline->numverts; i++ )
+	{
+		for ( j = 0; j < 3; j++ )
+		{
+			e1[j] = verts[i - 1][j] - verts[0][j];
+			e2[j] = verts[i][j] - verts[0][j];
+		}
+		area[0] += e1[1] * e2[2] - e1[2] * e2[1];
+		area[1] += e1[2] * e2[0] - e1[0] * e2[2];
+		area[2] += e1[0] * e2[1] - e1[1] * e2[0];
+	}
+	if ( DotProduct( area, area ) < 1.0f )
+		return;
+
+	surf->polys = outline->next;
+	DK_SubdividePolygon( surf, outline->numverts, verts );
+	free( outline );
+}
+
 
 static void DecompressVis (byte *visibility, int numvisibility, realDvis_t *vis, int clusterBytes, byte * out_real) {
 	int c;
@@ -915,6 +1033,21 @@ then normalize into GL format in gl_lms.lightmap_buffer.
 
 static float s_blocklights[LM_BLOCKLIGHTS_SIZE];		// intermediate RGB buffer for combining multiple lightmaps
 
+#define DK_LIGHTMAP_MODULATE	2.0f	// gl_modulate default
+#define DK_LIGHTMAP_OVERBRIGHT	4.0f	// 1 << r_mapOverBrightBits default
+
+// scale a colour down so its brightest channel is at most 255
+static void DK_ClampLight( float *c ) {
+	float cmax = c[0] > c[1] ? c[0] : c[1];
+
+	cmax = c[2] > cmax ? c[2] : cmax;
+	if ( cmax > 255 ) {
+		c[0] *= 255 / cmax;
+		c[1] *= 255 / cmax;
+		c[2] *= 255 / cmax;
+	}
+}
+
 void R_BuildLightMap (gllightmapstate_t *lms, msurface_t *surf, int stride) {
 	int smax, tmax;
 	int r, g, b, cmax;
@@ -933,35 +1066,44 @@ void R_BuildLightMap (gllightmapstate_t *lms, msurface_t *surf, int stride) {
 	if (size > ((sizeof(float) * LM_BLOCKLIGHTS_SIZE) / 16))
 		Com_Error(ERR_DROP, "R_BuildLightMap(): bad lms->blocklights size.");
 
-	if ( surf->samples ) {
-		for ( k = 0; k < DK_MAXLIGHTMAPS && surf->styles[k] != 255; k++ )
-			;
-		numlightmaps = k;
-		if ( numlightmaps > 1) {
-			// woah
-			// so samples is actually numlightmaps * size array
-			// and we need to upload all of those, assigning to each their own coordinates in a possibly the same atlas
-		}
-	}
-
-	k = 0;
+	// Daikatana's renderer adds up every lightmap block of a face (all style 0
+	// in practice) and scales the sum by gl_modulate (2). Faces without light
+	// data are drawn at full brightness.
 	if (surf->samples)
 	{
+		numlightmaps = 0;
+		while ( numlightmaps < DK_MAXLIGHTMAPS && surf->styles[numlightmaps] != 255 )
+			numlightmaps++;
+
+		memset( s_blocklights, 0, sizeof( s_blocklights[0] ) * size * 3 );
 		lm = surf->samples;
-		bl = s_blocklights;
-		for (i = 0; i < size; i++, bl += 3, lm += 3)
+		for ( k = 0; k < numlightmaps; k++ )
 		{
-			bl[0] = lm[0];
-			bl[1] = lm[1];
-			bl[2] = lm[2];
+			bl = s_blocklights;
+			for (i = 0; i < size; i++, bl += 3, lm += 3)
+			{
+				bl[0] += lm[0] * DK_LIGHTMAP_MODULATE;
+				bl[1] += lm[1] * DK_LIGHTMAP_MODULATE;
+				bl[2] += lm[2] * DK_LIGHTMAP_MODULATE;
+			}
 		}
 	}
 	else
 	{
-		// set to full bright if no light data
 		for (i = 0; i < size * 3; i++)
 			s_blocklights[i] = 255.f;
 	}
+
+	// Daikatana clamps the light at 1.0 keeping its hue, and the maps are lit
+	// for that: brighter spots saturate textures badly with overbright.
+	// Quake 3 draws lightmaps at 2^r_mapOverBrightBits (4 by default) times
+	// their stored value, so store a quarter of it.
+	bl = s_blocklights;
+	for (i = 0; i < size; i++, bl += 3)
+		DK_ClampLight( bl );
+	bl = s_blocklights;
+	for (i = 0; i < size * 3; i++)
+		bl[i] *= 1.0f / DK_LIGHTMAP_OVERBRIGHT;
 
 	//
 	// put into texture format
@@ -1057,6 +1199,60 @@ static qboolean LM_AllocBlock (gllightmapstate_t *lms, int w, int h, int *x, int
 	return qtrue;
 }
 
+/*
+================
+DK_LightPolyVertexes
+
+Vertex colours from the surface's lightmap, already scaled like it, for
+shaders that light with "rgbGen vertex" (translucent water) and r_vertexLight.
+The surface's lightmap block must still be the one being built.
+================
+*/
+static void DK_LightPolyVertexes( const gllightmapstate_t *lms, msurface_t *surf )
+{
+	glpoly_t	*poly;
+	int			i, c, x0, y0, x1, y1;
+	int			smin, tmin, smax, tmax;
+	float		x, y, fx, fy;
+	const byte	*block = lms->lightmap_buffer;
+
+	if ( surf->lightmaptexturenum < 0 )
+		return;
+
+	// stay inside this surface's luxels so neighbours in the atlas don't bleed in
+	smin = surf->light_s;
+	tmin = surf->light_t;
+	smax = smin + surf->extents[0] / 16;
+	tmax = tmin + surf->extents[1] / 16;
+
+	for ( poly = surf->polys; poly; poly = poly->next )
+	{
+		for ( i = 0; i < poly->numverts; i++ )
+		{
+			drawVert_t *v = &poly->verts[i];
+
+			x = v->lightmap[0][0] * LIGHTMAP_SIZE - 0.5f;
+			y = v->lightmap[0][1] * LIGHTMAP_SIZE - 0.5f;
+			x = x < smin ? smin : ( x > smax ? smax : x );
+			y = y < tmin ? tmin : ( y > tmax ? tmax : y );
+			x0 = (int)x;
+			y0 = (int)y;
+			x1 = x0 < smax ? x0 + 1 : x0;
+			y1 = y0 < tmax ? y0 + 1 : y0;
+			fx = x - x0;
+			fy = y - y0;
+
+			for ( c = 0; c < 3; c++ )
+			{
+				float top = block[( y0 * LIGHTMAP_SIZE + x0 ) * 3 + c] * ( 1 - fx ) + block[( y0 * LIGHTMAP_SIZE + x1 ) * 3 + c] * fx;
+				float bottom = block[( y1 * LIGHTMAP_SIZE + x0 ) * 3 + c] * ( 1 - fx ) + block[( y1 * LIGHTMAP_SIZE + x1 ) * 3 + c] * fx;
+
+				v->color[0][c] = (byte)( top * ( 1 - fy ) + bottom * fy + 0.5f );
+			}
+		}
+	}
+}
+
 void GL_CreateSurfaceLightmap (gllightmapstate_t *lms, msurface_t * surf)
 {
 	int smax, tmax;
@@ -1079,16 +1275,26 @@ void GL_CreateSurfaceLightmap (gllightmapstate_t *lms, msurface_t * surf)
 
 /* ******************************************** */
 
-// sky dome is a rectangular grid with this many verts to the edge
-#define SKY_BOX_SIZE		8192.0f
-#define NUM_SKYBOX_LAYERS	2
+// Daikatana sky: a flattened cloud dome with up to two scrolling layers of
+// the "cloudname" texture, and a skybox with alpha drawn over the clouds
+// (gl_warp.cpp R_DrawSkyBox). The defaults are the renderer's gl_cloud* cvars.
+#define DK_CLOUD_XDIR		1.0f
+#define DK_CLOUD_YDIR		0.8f
+#define DK_CLOUD1_TILE		8.0f
+#define DK_CLOUD1_SPEED		1.0f
+#define DK_CLOUD2_TILE		2.0f
+#define DK_CLOUD2_SPEED		4.0f
+#define DK_CLOUD2_ALPHA		0.7f
+#define DK_CLOUD_TIMESCALE	0.002f	// scroll offset grows by speed * tile1 * this per second
 
-typedef struct {
-	int		used;
-	float	scale[2];
-	float	scroll[2];
-	float	alphaGenConst;
-} skyboxLayer_t;
+// The DK dome rises a quarter of its half width; this Quake 3 cloud height
+// gives the cloud sphere about the same curvature.
+#define SKY_CLOUD_HEIGHT	512
+
+// Quake 3 draws "rgbGen identity" and the skybox at tr.identityLight (0.5 with
+// the default r_overBrightBits 1); "rgbGen const" is not scaled, so cloud
+// layer weights are premultiplied by it.
+#define SKY_IDENTITY_LIGHT	0.5f
 
 typedef struct {
 	char			*sky;
@@ -1099,49 +1305,37 @@ typedef struct {
 	float			cloud2tile, cloud2speed;
 	float			cloud2alpha;
 
-	float			curSkyScale;
-	float			texScale;
-
-	float			height;
-
 	int				fogValue;
 	float			fogStart, fogEnd, fogSkyEnd;
 	float			fogColor[3];
-
-	skyboxLayer_t	layers[NUM_SKYBOX_LAYERS];
 } skybox_t;
 
-static void SkyBoxCalcTexCoords(skybox_t *box, float skyScale) {
-    box->curSkyScale = skyScale;
-    box->texScale = box->curSkyScale/(2*SKY_BOX_SIZE);
-}
+static void SkyBoxPrintCloudLayer( const skybox_t *box, float tile, float speed, float weight, strbuf_t *strbuf ) {
+	char	line[2048];
+	float	rate = speed * box->cloud1tile * DK_CLOUD_TIMESCALE;
 
-static void SkyBoxSetupLayer(skybox_t *box, int layerNum, float texscale, float scrollval, float a)
-{
-    int i, j, pi, pj;
-    float du, dv;
-	skyboxLayer_t *layer;
-
-    if (box->cloud1tile!=box->curSkyScale)
-        SkyBoxCalcTexCoords(box, box->cloud1tile);
-    
-    du = box->cloudxdir*scrollval*box->cloud1tile;
-    dv = box->cloudydir*scrollval*box->cloud1tile;
-
-	layer = &box->layers[layerNum];
-	layer->scale[0] = texscale;
-	layer->scale[1] = texscale;
-	layer->scroll[0] = du / 256;
-	layer->scroll[1] = dv / 256;
-	layer->alphaGenConst = a;
-	layer->used = 1;
+	AppendToBuffer( strbuf, "\t{\n" );
+	sprintf( line, "\t\tmap env/32bit/%s.tga\n", box->cloudname );
+	AppendToBuffer( strbuf, line );
+	// add the clouds where the skybox is see-through, leaving the
+	// framebuffer alpha alone for the next layer
+	AppendToBuffer( strbuf, "\t\tblendFunc GL_ONE_MINUS_DST_ALPHA GL_ONE\n" );
+	sprintf( line, "\t\trgbGen const ( %f %f %f )\n", weight, weight, weight );
+	AppendToBuffer( strbuf, line );
+	AppendToBuffer( strbuf, "\t\talphaGen const 0\n" );
+	sprintf( line, "\t\ttcMod scale %f %f\n", tile, tile );
+	AppendToBuffer( strbuf, line );
+	sprintf( line, "\t\ttcMod scroll %f %f\n", box->cloudxdir * rate, box->cloudydir * rate );
+	AppendToBuffer( strbuf, line );
+	AppendToBuffer( strbuf, "\t}\n" );
 }
 
 static void SkyBoxPrint( const char *mapfilename, skybox_t *box, strbuf_t *strbuf ) {
-	int		i;
-	int		len;
 	char	line[2048];
-	skyboxLayer_t *layer;
+	float	cloud2weight;
+
+	if ( !box->sky )
+		return;
 
 	sprintf( line, "textures/%s/sky\n", mapfilename );
 	AppendToBuffer( strbuf, line );
@@ -1149,38 +1343,26 @@ static void SkyBoxPrint( const char *mapfilename, skybox_t *box, strbuf_t *strbu
 	sprintf( line, "{\n" "\tqer_editorimage env/32bit/%s_up.tga\n", box->sky );
 	AppendToBuffer( strbuf, line );
 	AppendToBuffer( strbuf, "\tsurfaceparm noimpact\n" "\tsurfaceparm nolightmap\n" "\tsurfaceparm sky\n");
-	sprintf( line, "\tskyparms - %f env/32bit/%s\n", box->height, box->sky );
+	sprintf( line, "\tskyparms env/32bit/%s %d -\n", box->sky, SKY_CLOUD_HEIGHT );
 	AppendToBuffer( strbuf, line );
 
-	if ( box->fogValue ) {
-		float c = box->fogEnd - box->fogStart;
-
-		sprintf( line, "\tfogvars ( %f %f %f ) %f\n", box->fogColor[0], box->fogColor[1], box->fogColor[2], c );
+	if ( box->fogValue && box->fogEnd > 1 ) {
+		// worldspawn fog is linear GL fog; a fogvars distance above 1 makes
+		// Spearmint's global fog linear too, opaque at that distance
+		sprintf( line, "\tfogvars ( %f %f %f ) %f\n", box->fogColor[0], box->fogColor[1], box->fogColor[2], box->fogEnd );
 		AppendToBuffer( strbuf, line );
 	}
 
-	layer = box->layers;
-	for ( i = 0; i < NUM_SKYBOX_LAYERS ; i++, layer++ ) {
-		if ( !layer->used )
-			continue;
+	if ( box->cloudname ) {
+		// The skybox was drawn opaque with its alpha left in the framebuffer.
+		// Premultiply it by that alpha so the clouds can be added behind it.
+		AppendToBuffer( strbuf, "\t{\n" "\t\tmap $whiteimage\n" "\t\tblendFunc GL_ZERO GL_DST_ALPHA\n" "\t}\n" );
 
-		AppendToBuffer( strbuf, "\t\t{\n" );
-		sprintf( line, "\t\t\tmap env/32bit/%s.tga\n", box->cloudname );
-		AppendToBuffer( strbuf, line );
-
-		if ( layer->alphaGenConst != 1) {
-			sprintf( line, "\t\t\talphaGen const %f\n", layer->alphaGenConst );
-			AppendToBuffer( strbuf, line );
-			AppendToBuffer( strbuf, "\t\t\tblendFunc GL_SRC_ALPHA GL_ONE_MINUS_SRC_ALPHA\n" );
+		cloud2weight = box->cloud2alpha < 1 ? box->cloud2alpha : 1;
+		SkyBoxPrintCloudLayer( box, box->cloud1tile, box->cloud1speed, ( 1 - cloud2weight ) * SKY_IDENTITY_LIGHT, strbuf );
+		if ( cloud2weight > 0 ) {
+			SkyBoxPrintCloudLayer( box, box->cloud2tile, box->cloud2speed, cloud2weight * SKY_IDENTITY_LIGHT, strbuf );
 		}
-		//Com_Printf( "\t\t\trgbGen const ( %f %f %f )\n", layer->rgbGenConst[0], layer->rgbGenConst[1], layer->rgbGenConst[2] );
-
-		sprintf( line, "\t\t\ttcmod scale %f %f\n", layer->scale[0], layer->scale[1] );
-		AppendToBuffer( strbuf, line );
-		sprintf( line, "\t\t\ttcmod scroll %f %f\n", layer->scroll[0], layer->scroll[1] );
-		AppendToBuffer( strbuf, line );
-
-		AppendToBuffer( strbuf, "\t\t}\n" );
 	}
 
 	AppendToBuffer( strbuf, "}\n" );
@@ -1191,6 +1373,10 @@ static void SkyBoxFree( skybox_t *box ) {
 		free( box->sky );
 	if ( box->cloudname )
 		free( box->cloudname );
+}
+
+static float SkyFloatForKey( entity_t *ent, const char *key, float defaultValue ) {
+	return *ValueForKey( ent, key ) ? FloatForKey( ent, key ) : defaultValue;
 }
 
 static void SkyboxFromEntity( skybox_t *box, entity_t *ent ) {
@@ -1205,25 +1391,15 @@ static void SkyboxFromEntity( skybox_t *box, entity_t *ent ) {
 	if ( *sky ) {
 		box->sky = copystring( sky );
 
-		box->cloudxdir = FloatForKey( ent, "cloudxdir" );
-		box->cloudydir = FloatForKey( ent, "cloudydir" );
-		box->cloud1tile = FloatForKey( ent, "cloud1tile" );
-		box->cloud1speed = FloatForKey( ent, "cloud1speed" );
-		box->cloud2tile = FloatForKey( ent, "cloud2tile" );
-		box->cloud2speed = FloatForKey( ent, "cloud2speed" );
-		box->cloud2alpha = FloatForKey( ent, "cloud2alpha" );
-
-		float timeval = 1.0f/256.0f;
-		box->height = SKY_BOX_SIZE * 0.5;
-
 		if ( *cloudname ) {
 			box->cloudname = copystring( cloudname );
-
-			SkyBoxSetupLayer( box, 0, 1, timeval * box->cloud1tile / box->cloud1speed, 1);
-			if ( box->cloud2alpha > 0 ) {
-				float alpha = (box->cloud2alpha < 1 ? box->cloud2alpha : 1);
-				SkyBoxSetupLayer( box, 1, box->cloud2tile/box->cloud1tile, timeval * box->cloud2tile/box->cloud2speed, alpha );
-			}
+			box->cloudxdir = SkyFloatForKey( ent, "cloudxdir", DK_CLOUD_XDIR );
+			box->cloudydir = SkyFloatForKey( ent, "cloudydir", DK_CLOUD_YDIR );
+			box->cloud1tile = SkyFloatForKey( ent, "cloud1tile", DK_CLOUD1_TILE );
+			box->cloud1speed = SkyFloatForKey( ent, "cloud1speed", DK_CLOUD1_SPEED );
+			box->cloud2tile = SkyFloatForKey( ent, "cloud2tile", DK_CLOUD2_TILE );
+			box->cloud2speed = SkyFloatForKey( ent, "cloud2speed", DK_CLOUD2_SPEED );
+			box->cloud2alpha = SkyFloatForKey( ent, "cloud2alpha", DK_CLOUD2_ALPHA );
 		}
 	}
 
@@ -1232,7 +1408,11 @@ static void SkyboxFromEntity( skybox_t *box, entity_t *ent ) {
 		box->fogStart = FloatForKey( ent, "fog_start" );
 		box->fogEnd = FloatForKey( ent, "fog_end" );
 		box->fogSkyEnd = FloatForKey( ent, "fog_skyend" );
-		if ( GetVectorForKey( ent, "fog_color", box->fogColor ) ) {
+		// Daikatana divides fog_color by 255, but the maps give it as 0-1
+		// fractions, so its fog comes out black. Use the colour the mapper
+		// picked; without one the fog stays black.
+		if ( GetVectorForKey( ent, "fog_color", box->fogColor ) &&
+			( box->fogColor[0] > 1 || box->fogColor[1] > 1 || box->fogColor[2] > 1 ) ) {
 			box->fogColor[0] *= 1.0f / 255.0f;
 			box->fogColor[1] *= 1.0f / 255.0f;
 			box->fogColor[2] *= 1.0f / 255.0f;
@@ -1291,6 +1471,16 @@ static void dkent_target_speaker( entity_t *ent )
 		sound1 = ValueForKey( ent, "sound" );
 	}
 	SetKeyValue( ent, "noise", sound1 );
+
+	// only the looping bits mean the same thing; the higher Quake 3 bits
+	// (global, activator, vis_multiple) would misfire, e.g. vis_multiple
+	// needs a target and aborts the map load without one
+	{
+		char	flags[16];
+
+		sprintf( flags, "%d", IntegerForKey( ent, "spawnflags" ) & 3 );
+		SetKeyValue( ent, "spawnflags", flags );
+	}
 
 	sound1 = ValueForKey( ent, "noise" );
 	if ( !*sound1 ) {
@@ -1690,7 +1880,8 @@ decoInfo_t *GetDeco( int episode, const char *name ) {
 #define BR_FLAGS_NO_EXPLOSION	128 // By default, will explode when it dies...this is your override.
 #define BR_FLAGS_START_OFF		256 // Will start off and will not appear until used.
 
-static void dkent_deco_e1( entity_t *ent )
+// deco_e1 .. deco_e4: the model and its properties come from the episode's decoinfo.csv
+static void dkent_deco( entity_t *ent, int episode )
 {
 	// NOTE: this entity is only for JKA
 
@@ -1740,9 +1931,11 @@ Damage: default is none
 	decoInfo_t *deco;
 
 	name =  ValueForKey( ent, "model" );
-	deco = GetDeco( 0, name );
+	deco = GetDeco( episode, name );
 	if ( deco == NULL ) {
-		Com_Error( ERR_DROP, "Unknown deco %s", name );
+		Com_Printf( "WARNING: unknown deco %s in episode %d, removed\n", name, episode + 1 );
+		FreeEntity( ent );
+		return;
 	}
 
 	COM_StripExtension( deco->path, modelname );
@@ -1849,6 +2042,136 @@ static void dkent_effect_rain( entity_t *ent ) {
 	//SetKeyValue( ent, "spawnflags", "1" ); // light
 }
 
+/*
+===============================================================================
+
+ITEMS
+
+Daikatana's weapons, ammo and pickups become the Quake 3 item that plays the
+same role, and keep their own look through the "model" key (mint-arena draws
+it instead of the item's model). Health and armor models depend on the episode.
+
+===============================================================================
+*/
+
+typedef struct {
+	const char	*dkClass;
+	const char	*q3Class;	// NULL: not in deathmatch, removed
+	const char	*model;		// %d is the episode
+} dkItem_t;
+
+static const dkItem_t dkItems[] = {
+	// melee
+	{ "weapon_gashands",	"weapon_gauntlet",			"models/e1/a_gashand.md3" },
+	{ "weapon_hammer",		"weapon_gauntlet",			"models/e2/a_hammer.md3" },
+	{ "weapon_silverclaw",	"weapon_gauntlet",			"models/e3/a_claw.md3" },
+	{ "weapon_daikatana",	"weapon_gauntlet",			"models/global/a_daikatana.md3" },
+	// episode 1
+	{ "weapon_ionblaster",	"weapon_plasmagun",			"models/e1/a_ion.md3" },
+	{ "weapon_c4viz",		"weapon_grenadelauncher",	"models/e1/a_c4.md3" },
+	{ "weapon_shotcycler",	"weapon_shotgun",			"models/e1/a_shot.md3" },
+	{ "weapon_sidewinder",	"weapon_rocketlauncher",	"models/e1/a_swindr.md3" },
+	{ "weapon_shockwave",	"weapon_bfg",				"models/e1/a_shokwv.md3" },
+	// episode 2
+	{ "weapon_discus",		"weapon_grenadelauncher",	"models/e2/a_discus.md3" },
+	{ "weapon_venomous",	"weapon_plasmagun",			"models/e2/a_venom.md3" },
+	{ "weapon_sunflare",	"weapon_rocketlauncher",	"models/e2/a_sflare.md3" },
+	{ "weapon_trident",		"weapon_shotgun",			"models/e2/a_tri.md3" },
+	{ "weapon_zeus",		"weapon_lightning",			"models/e2/a_zeus.md3" },
+	// episode 3
+	{ "weapon_bolter",		"weapon_machinegun",			"models/e3/a_bolter.md3" },
+	{ "weapon_ballista",	"weapon_railgun",			"models/e3/a_bal.md3" },
+	{ "weapon_stavros",		"weapon_rocketlauncher",	"models/e3/a_stav.md3" },
+	{ "weapon_wyndrax",		"weapon_lightning",			"models/e3/a_wyndrx.md3" },
+	{ "weapon_nightmare",	"weapon_bfg",				"models/e3/a_nmare.md3" },
+	// episode 4
+	{ "weapon_glock",		"weapon_machinegun",		"models/e4/a_glock.md3" },
+	{ "weapon_slugger",		"weapon_shotgun",			"models/e4/a_slug.md3" },
+	{ "weapon_ripgun",		"weapon_plasmagun",			"models/e4/a_ripgun.md3" },
+	{ "weapon_kineticore",	"weapon_grenadelauncher",	"models/e4/a_kcore.md3" },
+	{ "weapon_novabeam",	"weapon_railgun",			"models/e4/a_nova.md3" },
+	{ "weapon_metamaser",	"weapon_bfg",				"models/e4/a_mmaser.md3" },
+
+	// ammo goes with the weapon that uses it; only base Quake 3 weapons, the
+	// Team Arena ones are missing outside the missionpack build
+	{ "ammo_ionpack",		"ammo_cells",				"models/e1/wa_ion.md3" },
+	{ "ammo_c4",			"ammo_grenades",			"models/e1/wa_c4.md3" },
+	{ "ammo_shells",		"ammo_shells",				"models/e1/wa_shot6.md3" },
+	{ "ammo_rockets",		"ammo_rockets",				"models/e1/wa_swindr.md3" },
+	{ "ammo_shocksphere",	"ammo_bfg",					"models/e1/wa_shokwv.md3" },
+	{ "ammo_discus",		"ammo_grenades",			"models/e2/a_discus.md3" },	// no ammo model, DK reuses the weapon
+	{ "ammo_venomous",		"ammo_cells",				"models/e2/wa_venom.md3" },
+	{ "ammo_sunflare",		"ammo_rockets",				"models/e2/a_sflare.md3" },
+	{ "ammo_tritips",		"ammo_shells",				"models/e2/wa_trident.md3" },
+	{ "ammo_zeus",			"ammo_lightning",			"models/e2/wa_zeus.md3" },
+	{ "ammo_bolts",			"ammo_bullets",				"models/e3/wa_bolt.md3" },
+	{ "ammo_ballista",		"ammo_slugs",				"models/e3/wa_bal.md3" },
+	{ "ammo_stavros",		"ammo_rockets",				"models/e3/wa_stav.md3" },
+	{ "ammo_wisp",			"ammo_lightning",			"models/e3/a_wyndrx.md3" },
+	{ "ammo_bullets",		"ammo_bullets",				"models/e4/wa_glock.md3" },
+	{ "ammo_slugger",		"ammo_shells",				"models/e4/wa_rip.md3" },
+	{ "ammo_cordite",		"ammo_shells",				"models/e4/wa_rip.md3" },
+	{ "ammo_ripgun",		"ammo_cells",				"models/e4/wa_slug.md3" },
+	{ "ammo_kineticore",	"ammo_grenades",			"models/e4/wa_kcore.md3" },
+	{ "ammo_novabeam",		"ammo_slugs",				"models/e4/wa_nova.md3" },
+	{ "ammo_metamaser",		"ammo_bfg",					"models/e4/a_mmaser.md3" },
+
+	// health and armor
+	{ "item_health_25",		"item_health",				"models/e%d/a%d_hlth.md3" },
+	{ "item_health_50",		"item_health_large",		"models/e%d/a%d_hlth2.md3" },
+	{ "item_goldensoul",	"item_health_mega",			"models/global/a_gsoul.md3" },
+	{ "item_plasteel_armor",	"item_armor_combat",	"models/e%d/a%d_ar1.md3" },
+	{ "item_silver_armor",		"item_armor_combat",	"models/e%d/a%d_ar1.md3" },
+	{ "item_chainmail_armor",	"item_armor_combat",	"models/e%d/a%d_ar1.md3" },
+	{ "item_kevlar_armor",		"item_armor_combat",	"models/e%d/a%d_ar1.md3" },
+	{ "item_chromatic_armor",	"item_armor_body",		"models/e%d/a%d_ar2.md3" },
+	{ "item_gold_armor",		"item_armor_body",		"models/e%d/a%d_ar2.md3" },
+	{ "item_black_adamant_armor",	"item_armor_body",	"models/e%d/a%d_ar2.md3" },
+	{ "item_ebonite_armor",		"item_armor_body",		"models/e%d/a%d_ar2.md3" },
+
+	// artifacts: Daikatana's permanent boosts become timed powerups
+	{ "item_wraithorb",		"item_invis",				"models/global/a_wraithorb.md3" },
+	{ "item_power_boost",	"item_quad",				"models/global/a_pwrb.md3" },
+	{ "item_attack_boost",	"item_haste",				"models/global/a_atkb.md3" },
+	{ "item_speed_boost",	"item_haste",				"models/global/a_spdb.md3" },
+	{ "item_acro_boost",	"item_haste",				"models/global/a_acrb.md3" },
+	{ "item_vita_boost",	"item_regen",				"models/global/a_vtlb.md3" },
+	{ "item_megashield",	"item_enviro",				"models/global/a_mshield.md3" },
+	{ "item_invincibility",	"item_enviro",				"models/global/a_invincibility.md3" },
+	{ "item_antidote",		"holdable_medkit",			"models/global/a_antidote.md3" },
+
+	// treasure chests only matter in single player
+	{ "item_black_chest",	NULL,						NULL },
+	{ "item_wood_chest",	NULL,						NULL },
+};
+
+static int dk_episode = 1;	// from worldspawn, picks health and armor models
+
+static qboolean dkent_item( entity_t *ent, const char *className )
+{
+	char	model[MAX_QPATH];
+	int		i;
+
+	for ( i = 0; i < (int)( sizeof( dkItems ) / sizeof( dkItems[0] ) ); i++ ) {
+		const dkItem_t *item = &dkItems[i];
+
+		if ( Q_stricmp( className, item->dkClass ) ) {
+			continue;
+		}
+		if ( !item->q3Class ) {
+			FreeEntity( ent );
+			return qtrue;
+		}
+		if ( item->model ) {
+			snprintf( model, sizeof( model ), item->model, dk_episode, dk_episode );
+			SetKeyValue( ent, "model", model );
+		}
+		SetKeyValue( ent, "classname", item->q3Class );
+		return qtrue;
+	}
+	return qfalse;
+}
+
 static void dkent_worldspawn( const char *mapname, vec3_t worldMins, vec3_t worldMaxs, entity_t *ent )
 {
 	int			i;
@@ -1858,6 +2181,12 @@ static void dkent_worldspawn( const char *mapname, vec3_t worldMins, vec3_t worl
 	};
 
 	RenameKeys( ent, sizeof( pairs ) / sizeof( *pairs ), pairs );
+
+	// item models are per episode; maps name it, or it's the digit in "eNdm1"
+	dk_episode = IntegerForKey( ent, "episode" );
+	if ( dk_episode < 1 || dk_episode > 4 ) {
+		dk_episode = ( mapname[0] == 'e' && mapname[1] >= '1' && mapname[1] <= '4' ) ? mapname[1] - '0' : 1;
+	}
 
 	// loadscreen: says which load screen to use
 	// but Q3 always picks map name instead
@@ -1896,14 +2225,24 @@ static void ProcessEntity( const char *mapname, vec3_t worldMins, vec3_t worldMa
 	if (!strcmp(className, "worldspawn")) {
 		dkent_worldspawn( mapname, worldMins, worldMaxs, ent );
 	}
-	else if (!strcmp(className, "info_player_start")) {
-		// keep it
+	else if (!strcmp(className, "info_player_start") || !strcmp(className, "info_player_deathmatch")
+		|| !strcmp(className, "info_player_intermission") || !strcmp(className, "trigger_teleport")) {
+		// same entity in Quake 3
+	}
+	else if (dkent_item( ent, className )) {
+		// converted or removed
+	}
+	else if (!strcmp(className, "info_teleport_destination")) {
+		SetKeyValue( ent, "classname", "misc_teleporter_dest" );
 	}
 	else if (!strcmp(className, "effect_rain")) {
 		dkent_effect_rain( ent );
 	}
-	else if (!strcmp(className, "deco_e1")) {
-		dkent_deco_e1( ent );
+	else if (!strcmp(className, "effect_snow")) {
+		// mint-arena's cgame makes snow volumes from it as is
+	}
+	else if (!strncmp(className, "deco_e", 6) && className[6] >= '1' && className[6] <= '4' && !className[7]) {
+		dkent_deco( ent, className[6] - '1' );
 	}
 	else if (!strcmp(className, "light")) {
 		// keep it
@@ -1978,11 +2317,14 @@ static void ConvertEntityString(const char *mapname, bspFile_t *bsp, const void 
 
 	CopyLump( header, LUMP_ENTITIES, data, mapEntityString, mapEntityStringSize, qfalse ); /* NO SWAP */	
 
-#if 1
-	FILE *fp = fopen("/home/deck/Documents/proj/dk-restoration/dkres/maps/entities.txt", "wb");
-	fwrite(mapEntityString, 1, mapEntityStringSize, fp);
-	fclose(fp);
-#endif
+	// dump the entities next to the output for debugging, if the directory exists
+	{
+		FILE *fp = fopen( "maps/entities.txt", "wb" );
+		if ( fp ) {
+			fwrite( mapEntityString, 1, mapEntityStringSize, fp );
+			fclose( fp );
+		}
+	}
 
 	ParseEntities( mapEntityString, mapEntityStringSize );
 
@@ -2184,10 +2526,330 @@ static void OutputGeneratedFogShaders( const char *basename, mfog_t *fogs, int n
 		AppendToBuffer( sb, line );
 
 		sprintf(line, "fogparms ( %f %f %f ) %f\n",
-			fog->shader, color[0], color[1], color[2], distance);
+			color[0], color[1], color[2], distance);
 		AppendToBuffer( sb, line );
 
 		AppendToBuffer( sb, "}\n" );
+	}
+}
+
+/*
+===============================================================================
+
+Generated surface shaders
+
+Daikatana draws its surface effects from texinfo flags. Every texture and
+effect flag combination gets a shader named <texture>_dk<flags> that
+reproduces the effect, with constants from the Daikatana GL renderer.
+Names only depend on the texture and flags so they're the same in every map.
+
+===============================================================================
+*/
+
+// flags that change how a surface is drawn
+#define DK_SHADER_FLAGS ( SURF_FULLBRIGHT | SURF_WARP | SURF_TRANS33 | SURF_TRANS66 | SURF_FLOWING | SURF_NODRAW \
+						| SURF_ALPHACHAN | SURF_MIDTEXTURE | SURF_SURGE | SURF_BIGSURGE )
+#define DK_ANIMATED_FLAG	0x80000000	// marks texture animation in the shader name
+#define DK_GLOW_FLAG		0x40000000	// the texture has a _glow companion
+
+#define DK_MAX_ANIM_FRAMES	8			// animMap limit
+#define DK_ANIM_FPS			2			// world texture animations run at 2 frames per second
+#define DK_WAVE_FREQUENCY	0.159155f	// warp and surge run at 1 radian per second
+#define DK_WARP_AMPLITUDE	4.0f		// texels
+#define DK_TRANS33_ALPHA	0.33f
+#define DK_TRANS66_ALPHA	0.66f
+
+static void DK_TextureName( const mtexinfo_t *tex, char *out, int size ) {
+	COM_StripExtension( tex->image->name, out );
+}
+
+static qboolean DK_HasGlowMap( const mtexinfo_t *tex ) {
+	char texname[MAX_QPATH], name[MAX_QPATH + 16];
+	FILE *f;
+
+	DK_TextureName( tex, texname, sizeof( texname ) );
+	snprintf( name, sizeof( name ), "%s_glow.tga", texname );
+	f = fopen( name, "rb" );
+	if ( !f ) {
+		return qfalse;
+	}
+	fclose( f );
+	return qtrue;
+}
+
+/*
+================
+DK_HasGlow
+
+Daikatana ships _glow masks for lamps, screens and indicators but never draws
+them. Lightmapped surfaces add them on top, so lights stay lit in the dark.
+Animated textures need one for every frame.
+================
+*/
+static qboolean DK_HasGlow( const mtexinfo_t *tex ) {
+	const mtexinfo_t *frame;
+	int numFrames;
+
+	if ( tex->flags & ( SURF_FULLBRIGHT | SURF_NODRAW | SURF_TRANS33 | SURF_TRANS66 ) ) {
+		return qfalse;
+	}
+	for ( frame = tex, numFrames = 0; frame && numFrames < DK_MAX_ANIM_FRAMES; frame = frame->next, numFrames++ ) {
+		if ( numFrames && frame == tex ) {
+			break;
+		}
+		if ( !DK_HasGlowMap( frame ) ) {
+			return qfalse;
+		}
+	}
+	return qtrue;
+}
+
+static int DK_ShaderFlags( const mtexinfo_t *tex ) {
+	int flags = tex->flags & DK_SHADER_FLAGS;
+
+	if ( tex->next ) {
+		flags |= DK_ANIMATED_FLAG;
+	}
+	if ( DK_HasGlow( tex ) ) {
+		flags |= DK_GLOW_FLAG;
+	}
+	return flags;
+}
+
+/*
+================
+DK_GeneratedShaderName
+
+Plain textures keep their own name, texture lookups find them without a shader.
+================
+*/
+static qboolean DK_GeneratedShaderName( const mtexinfo_t *tex, char *out, int size ) {
+	char texname[MAX_QPATH];
+	int flags = DK_ShaderFlags( tex );
+
+	DK_TextureName( tex, texname, sizeof( texname ) );
+	if ( !flags ) {
+		Q_strncpyz( out, texname, size );
+		return qfalse;
+	}
+	snprintf( out, size, "%s_dk%x", texname, flags );
+	return qtrue;
+}
+
+/*
+================
+DK_AppendTextureMap
+
+map, or animMap for texture animation chains
+================
+*/
+static void DK_AppendTextureMapSuffix( strbuf_t *sb, const mtexinfo_t *tex, const char *suffix ) {
+	const mtexinfo_t *frame;
+	char line[2048], texname[MAX_QPATH];
+	int numFrames;
+
+	DK_TextureName( tex, texname, sizeof( texname ) );
+	if ( !tex->next ) {
+		snprintf( line, sizeof( line ), "\t\tmap %s%s.tga\n", texname, suffix );
+		AppendToBuffer( sb, line );
+		return;
+	}
+
+	snprintf( line, sizeof( line ), "\t\tanimMap %d", DK_ANIM_FPS );
+	AppendToBuffer( sb, line );
+	for ( frame = tex, numFrames = 0; frame && numFrames < DK_MAX_ANIM_FRAMES; frame = frame->next, numFrames++ ) {
+		if ( numFrames && frame == tex ) {
+			break;
+		}
+		DK_TextureName( frame, texname, sizeof( texname ) );
+		snprintf( line, sizeof( line ), " %s%s.tga", texname, suffix );
+		AppendToBuffer( sb, line );
+	}
+	AppendToBuffer( sb, "\n" );
+}
+
+static void DK_AppendTextureMap( strbuf_t *sb, const mtexinfo_t *tex ) {
+	DK_AppendTextureMapSuffix( sb, tex, "" );
+}
+
+/*
+================
+DK_AppendTexCoordMods
+
+SURF_WARP: s' = s + 4 sin( t / 8 + time ), in texels. Quake 3's turb can't
+match the ~50 texel wavelength but the amplitude and speed are the same.
+SURF_FLOWING scrolls along s at a fixed speed, texinfo value isn't used:
+32 texels a second on warping faces, half the texture a second otherwise.
+================
+*/
+static void DK_AppendTexCoordMods( strbuf_t *sb, const mtexinfo_t *tex ) {
+	char line[2048];
+	float width = tex->image->width > 0 ? tex->image->width : 64;
+
+	if ( tex->flags & SURF_WARP ) {
+		snprintf( line, sizeof( line ), "\t\ttcMod turb 0 %f 0 %f\n", DK_WARP_AMPLITUDE / width, DK_WAVE_FREQUENCY );
+		AppendToBuffer( sb, line );
+	}
+	if ( tex->flags & SURF_FLOWING ) {
+		snprintf( line, sizeof( line ), "\t\ttcMod scroll %f 0\n", ( tex->flags & SURF_WARP ) ? -32.0f / width : -0.5f );
+		AppendToBuffer( sb, line );
+	}
+}
+
+/*
+================
+DK_AppendGlowStage
+================
+*/
+static void DK_AppendGlowStage( strbuf_t *sb, const mtexinfo_t *tex, qboolean depthEqual ) {
+	if ( !DK_HasGlow( tex ) ) {
+		return;
+	}
+	AppendToBuffer( sb, "\t{\n" );
+	DK_AppendTextureMapSuffix( sb, tex, "_glow" );
+	DK_AppendTexCoordMods( sb, tex );
+	AppendToBuffer( sb, "\t\tblendFunc add\n\t\trgbGen identity\n" );
+	if ( depthEqual ) {
+		AppendToBuffer( sb, "\t\tdepthFunc equal\n" );
+	}
+	AppendToBuffer( sb, "\t}\n" );
+}
+
+/*
+================
+DK_VertexLit
+
+Translucent lit surfaces take their light from vertex colours.
+================
+*/
+static qboolean DK_VertexLit( const mtexinfo_t *tex ) {
+	return ( tex->flags & ( SURF_TRANS33 | SURF_TRANS66 ) ) && !( tex->flags & ( SURF_FULLBRIGHT | SURF_NODRAW ) );
+}
+
+/*
+================
+DK_AppendGeneratedShader
+================
+*/
+static void DK_AppendGeneratedShader( strbuf_t *sb, const mtexinfo_t *tex, const char *name ) {
+	char line[2048], texname[MAX_QPATH];
+	int flags = tex->flags;
+	float width = tex->image->width > 0 ? tex->image->width : 64;
+	qboolean translucent = ( flags & ( SURF_TRANS33 | SURF_TRANS66 ) ) != 0;
+	qboolean fullbright = ( flags & SURF_FULLBRIGHT ) != 0;
+	qboolean hasHoles = tex->image->num_alpha_pixels > 0;
+	qboolean alphaTest = !translucent && ( ( flags & ( SURF_MIDTEXTURE | SURF_ALPHACHAN ) ) || ( fullbright && hasHoles ) );
+
+	DK_TextureName( tex, texname, sizeof( texname ) );
+
+	snprintf( line, sizeof( line ), "%s\n{\n\tqer_editorimage %s.tga\n", name, texname );
+	AppendToBuffer( sb, line );
+
+	if ( flags & SURF_NODRAW ) {
+		AppendToBuffer( sb, "\tsurfaceparm nodraw\n\tsurfaceparm nonsolid\n}\n\n" );
+		return;
+	}
+
+	if ( fullbright ) {
+		AppendToBuffer( sb, "\tsurfaceparm nolightmap\n" );
+	}
+	if ( translucent ) {
+		AppendToBuffer( sb, "\tsurfaceparm trans\n" );
+	}
+	if ( alphaTest ) {
+		AppendToBuffer( sb, "\tsurfaceparm alphashadow\n" );
+	}
+
+	// SURF_SURGE and SURF_BIGSURGE move warping faces up and down by 4 and 16 units,
+	// the wave repeats every 2pi / k texture widths ( k = 0.25 and 0.5 )
+	if ( ( flags & SURF_WARP ) && ( flags & ( SURF_SURGE | SURF_BIGSURGE ) ) ) {
+		qboolean big = ( flags & SURF_BIGSURGE ) != 0;
+		float div = width * ( 2.0f * M_PI / ( big ? 0.5f : 0.25f ) );
+
+		AppendToBuffer( sb, "\tq3map_tessSize 64\n" );
+		snprintf( line, sizeof( line ), "\tdeformVertexes wave %f sin 0 %f 0 %f\n", div, big ? 16.0f : 4.0f, DK_WAVE_FREQUENCY );
+		AppendToBuffer( sb, line );
+	}
+
+	if ( fullbright ) {
+		// no lightmap, full texture brightness
+		AppendToBuffer( sb, "\t{\n" );
+		DK_AppendTextureMap( sb, tex );
+		DK_AppendTexCoordMods( sb, tex );
+		AppendToBuffer( sb, "\t\trgbGen identity\n" );
+		if ( translucent ) {
+			snprintf( line, sizeof( line ), "\t\tblendFunc blend\n\t\talphaGen const %f\n", ( flags & SURF_TRANS33 ) ? DK_TRANS33_ALPHA : DK_TRANS66_ALPHA );
+			AppendToBuffer( sb, line );
+		} else if ( alphaTest ) {
+			AppendToBuffer( sb, "\t\talphaFunc GE128\n" );
+		}
+		AppendToBuffer( sb, "\t}\n}\n\n" );
+		return;
+	}
+
+	if ( translucent ) {
+		// Daikatana multiplies the lightmap over the whole blended polygon, which
+		// darkens everything seen through it. Light only the surface itself,
+		// from the lightmap sampled into its (subdivided) vertexes.
+		AppendToBuffer( sb, "\t{\n" );
+		DK_AppendTextureMap( sb, tex );
+		DK_AppendTexCoordMods( sb, tex );
+		snprintf( line, sizeof( line ), "\t\trgbGen exactVertex\n\t\tblendFunc blend\n\t\talphaGen const %f\n", ( flags & SURF_TRANS33 ) ? DK_TRANS33_ALPHA : DK_TRANS66_ALPHA );
+		AppendToBuffer( sb, line );
+		AppendToBuffer( sb, "\t}\n}\n\n" );
+		return;
+	}
+
+	if ( alphaTest ) {
+		// MIDTEXTURE and ALPHACHAN: palette index 255 is see through
+		AppendToBuffer( sb, "\t{\n" );
+		DK_AppendTextureMap( sb, tex );
+		DK_AppendTexCoordMods( sb, tex );
+		AppendToBuffer( sb, "\t\talphaFunc GE128\n\t\tdepthWrite\n\t}\n" );
+		AppendToBuffer( sb, "\t{\n\t\tmap $lightmap\n\t\tblendFunc filter\n\t\tdepthFunc equal\n\t}\n" );
+		DK_AppendGlowStage( sb, tex, qtrue );
+		AppendToBuffer( sb, "}\n\n" );
+		return;
+	}
+
+	// opaque, lightmapped: warp, flowing and animated surfaces
+	AppendToBuffer( sb, "\t{\n\t\tmap $lightmap\n\t\trgbGen identity\n\t}\n\t{\n" );
+	DK_AppendTextureMap( sb, tex );
+	DK_AppendTexCoordMods( sb, tex );
+	AppendToBuffer( sb, "\t\tblendFunc filter\n\t}\n" );
+	DK_AppendGlowStage( sb, tex, qfalse );
+	AppendToBuffer( sb, "}\n\n" );
+}
+
+/*
+================
+DK_OutputGeneratedShaders
+================
+*/
+static void DK_OutputGeneratedShaders( mtexinfo_t *texInfos, int numTexInfos, strbuf_t *sb ) {
+	int i, j;
+	char name[MAX_QPATH], other[MAX_QPATH];
+
+	for ( i = 0; i < numTexInfos; i++ ) {
+		if ( !texInfos[i].generatedShader ) {
+			continue;
+		}
+		DK_GeneratedShaderName( &texInfos[i], name, sizeof( name ) );
+
+		// one shader per name
+		for ( j = 0; j < i; j++ ) {
+			if ( texInfos[j].generatedShader ) {
+				DK_GeneratedShaderName( &texInfos[j], other, sizeof( other ) );
+				if ( !Q_stricmp( name, other ) ) {
+					break;
+				}
+			}
+		}
+		if ( j < i ) {
+			continue;
+		}
+
+		DK_AppendGeneratedShader( sb, &texInfos[i], name );
 	}
 }
 
@@ -2207,6 +2869,8 @@ static void OutputTexInfoShaders( const char *basename, msurface_t *faces, int n
 	OutputGeneratedFogShaders( basename, fogs, numFogs, &stringbuf );
 
 	SkyBoxPrint( basename, skybox, &stringbuf );
+
+	DK_OutputGeneratedShaders( texInfos, numTexInfos, &stringbuf );
 
 	// TODO: collect all e.g. fullbright texinfos (same surface flags + texture)
 	// - assign to each group a distinct shaderNum
@@ -2523,11 +3187,13 @@ static void Foo(mtexinfo_t *texinfo, float fWarpTime) {
 		AppendToBuffer( &stringbuf, "}\n" );
 	}
 #endif
-	filedatasize = stringbuf.cur - stringbuf.buf + 1;
+	filedatasize = stringbuf.cur - stringbuf.buf;
 
-	bsp->shaderStringLength = filedatasize + 1;
+	// the file gets the text without its terminator
+	bsp->shaderStringLength = filedatasize;
 	bsp->shaderString = malloc( filedatasize + 1 );
-	Q_strncpyz( bsp->shaderString, filedata, filedatasize );
+	memcpy( bsp->shaderString, filedata, filedatasize );
+	bsp->shaderString[filedatasize] = '\0';
 }
 
 #if 1
@@ -2647,6 +3313,12 @@ static void ProcessTexInfo( bspFile_t *bsp, const void *data, dheader_t *header,
 			// even if it has a texture, it is not meant to be drawn
 			out->skip = qtrue;
 		}
+		else if (out->flags & SURF_NODRAW)
+		{
+			// Daikatana never draws these, e.g. the sides of grates. They keep
+			// their brush sides for collision but get no draw surface.
+			out->skip = qtrue;
+		}
 	}
 
 	// count animation frames
@@ -2756,6 +3428,9 @@ static void ProcessFaces(
 			//}
 			//if (! (out->texinfo->flags & (SURF_WARP)) ) 
 			GL_BuildPolygonFromSurface(verts, edges, surfEdges, out);
+			if ( out->texinfo->flags & SURF_WARP )
+				DK_SubdivideWarpSurface( out );
+			DK_LightPolyVertexes( &gl_lms, out );
 		}
 	}
 
@@ -2797,8 +3472,10 @@ static void ConvertSurfaces( bspFile_t *bsp, msurface_t *faces, int numFaces, mt
 			continue; // texinfo has no shader: skip this
 		}
 
-		numDrawVerts += face->polys->numverts;
-		numIndexes += (face->polys->numverts - 2) * 3;
+		for (glpoly_t *poly = face->polys; poly; poly = poly->next) {
+			numDrawVerts += poly->numverts;
+			numIndexes += (poly->numverts - 2) * 3;
+		}
 	}
 	
 	bsp->numDrawVerts = 0;
@@ -2834,45 +3511,32 @@ static void ConvertSurfaces( bspFile_t *bsp, msurface_t *faces, int numFaces, mt
 		}
 		out->surfaceType = MST_PLANAR;
 
-		// convert vertices
+		// convert vertices and indices, a triangle fan per polygon
 		out->firstVert = bsp->numDrawVerts;
-		if (in->texinfo->skip)
-		{
-			out->numVerts = 0;
-		}
-		else
-		{
-			out->numVerts = in->polys->numverts;
-			bsp->numDrawVerts += out->numVerts;
-			memcpy(bsp->drawVerts + out->firstVert, in->polys->verts, out->numVerts * sizeof(*bsp->drawVerts));
-			for (j = 0; j < out->numVerts; j++)
-			{
-				bsp->drawVerts[out->firstVert + j].color[0][0] = in->texinfo->color[0];
-				bsp->drawVerts[out->firstVert + j].color[0][1] = in->texinfo->color[1];
-				bsp->drawVerts[out->firstVert + j].color[0][2] = in->texinfo->color[2];
-				bsp->drawVerts[out->firstVert + j].color[0][3] = 255;
-			}
-		}
-
-		// convert indices
 		out->firstIndex = bsp->numDrawIndexes;
-		if (in->texinfo->skip)
+		out->numVerts = 0;
+		out->numIndexes = 0;
+		if (!in->texinfo->skip)
 		{
-			out->numIndexes = 0;
-		}
-		else
-		{
-			out->numIndexes = (in->polys->numverts - 2) * 3;
-			bsp->numDrawIndexes += out->numIndexes;
-			index = &bsp->drawIndexes[out->firstIndex];
-			for (k = 0, j = 2; k < out->numIndexes; k += 3, j++) {
-				index[k + 0] = 0;
-				index[k + 1] = j - 1;
-				index[k + 2] = j;
+			for (glpoly_t *poly = in->polys; poly; poly = poly->next)
+			{
+				memcpy(bsp->drawVerts + bsp->numDrawVerts, poly->verts, poly->numverts * sizeof(*bsp->drawVerts));
+				index = &bsp->drawIndexes[bsp->numDrawIndexes];
+				for (k = 0, j = 2; j < poly->numverts; k += 3, j++) {
+					index[k + 0] = out->numVerts;
+					index[k + 1] = out->numVerts + j - 1;
+					index[k + 2] = out->numVerts + j;
+				}
+				out->numVerts += poly->numverts;
+				out->numIndexes += k;
+				bsp->numDrawVerts += poly->numverts;
+				bsp->numDrawIndexes += k;
 			}
 		}
 
-		out->lightmapNum[0] = in->lightmaptexturenum;
+		// empty surfaces for skipped texinfos draw nothing, so give them no lightmap
+		// and vertex lit ones don't use one
+		out->lightmapNum[0] = ( in->texinfo->skip || DK_VertexLit( in->texinfo ) ) ? -1 : in->lightmaptexturenum;
 
 		// TODO: is this correct? Q3A does not seem to care about this
 		//out->lightmapX = in->texturemins[0];
@@ -2930,6 +3594,246 @@ static void PrintTexInfoSurfaceFlags(mtexinfo_t *texinfo)
 
 static qboolean outputJKA = qfalse; // TODO: make it truly switchable
 
+
+/*
+===============================================================================
+
+LIGHT GRID
+
+Daikatana lights models from the lightmap under them (R_LightPoint traces
+straight down and samples the first lit face). Bake that into a Quake 3
+light grid so models, players and items get the map's lighting.
+
+===============================================================================
+*/
+
+#define DK_LIGHTPOINT_DEPTH		2048	// R_LightPoint traces this far down
+#define DK_GRID_AMBIENT			1.0f	// share of the sample used as ambient light
+#define DK_GRID_DIRECTED		0.5f	// and as light from above
+
+typedef struct {
+	const realDnode_t	*nodes;
+	const realDplane_t	*planes;
+	const realDleaf_t	*leafs;
+	const msurface_t	*faces;
+} dkLightTree_t;
+
+/*
+================
+DK_RecursiveLightPoint
+
+Quake 2's RecursiveLightPoint: 1 and the light at the first lit face the
+segment hits, 0 for a face without light data, -1 for no hit.
+================
+*/
+static int DK_RecursiveLightPoint( const dkLightTree_t *tree, int nodenum, const vec3_t start, const vec3_t end, vec3_t color )
+{
+	const realDnode_t	*node;
+	const realDplane_t	*plane;
+	float				front, back, frac;
+	vec3_t				mid;
+	int					side, r, i, k, map;
+
+	if ( nodenum < 0 )
+		return -1;
+
+	node = &tree->nodes[nodenum];
+	plane = &tree->planes[node->planenum];
+	front = DotProduct( start, plane->normal ) - plane->dist;
+	back = DotProduct( end, plane->normal ) - plane->dist;
+	side = front < 0;
+
+	if ( ( back < 0 ) == side )
+		return DK_RecursiveLightPoint( tree, node->children[side], start, end, color );
+
+	frac = front / ( front - back );
+	for ( k = 0; k < 3; k++ )
+		mid[k] = start[k] + ( end[k] - start[k] ) * frac;
+
+	r = DK_RecursiveLightPoint( tree, node->children[side], start, mid, color );
+	if ( r >= 0 )
+		return r;
+
+	for ( i = 0; i < node->numfaces; i++ )
+	{
+		const msurface_t *surf = &tree->faces[node->firstface + i];
+		const byte *lightmap;
+		int ds, dt, smax, tmax, size;
+
+		if ( surf->texinfo->flags & ( SURF_SKY | SURF_WARP | SURF_FULLBRIGHT | SURF_NODRAW | SURF_FOGPLANE ) )
+			continue;
+
+		ds = (int)( DotProduct( mid, surf->texinfo->s ) + surf->texinfo->s_offset );
+		dt = (int)( DotProduct( mid, surf->texinfo->t ) + surf->texinfo->t_offset );
+		if ( ds < surf->texturemins[0] || dt < surf->texturemins[1] )
+			continue;
+		ds -= surf->texturemins[0];
+		dt -= surf->texturemins[1];
+		if ( ds > surf->extents[0] || dt > surf->extents[1] )
+			continue;
+
+		if ( !surf->samples )
+			return 0;
+
+		smax = ( surf->extents[0] >> 4 ) + 1;
+		tmax = ( surf->extents[1] >> 4 ) + 1;
+		size = smax * tmax;
+		lightmap = surf->samples + 3 * ( ( dt >> 4 ) * smax + ( ds >> 4 ) );
+
+		color[0] = color[1] = color[2] = 0;
+		for ( map = 0; map < DK_MAXLIGHTMAPS && surf->styles[map] != 255; map++, lightmap += size * 3 )
+		{
+			color[0] += lightmap[0] * DK_LIGHTMAP_MODULATE;
+			color[1] += lightmap[1] * DK_LIGHTMAP_MODULATE;
+			color[2] += lightmap[2] * DK_LIGHTMAP_MODULATE;
+		}
+		return 1;
+	}
+
+	return DK_RecursiveLightPoint( tree, node->children[!side], mid, end, color );
+}
+
+static qboolean DK_PointInSolid( const dkLightTree_t *tree, const vec3_t p )
+{
+	int nodenum = 0;
+
+	while ( nodenum >= 0 )
+	{
+		const realDnode_t *node = &tree->nodes[nodenum];
+		const realDplane_t *plane = &tree->planes[node->planenum];
+
+		nodenum = node->children[ DotProduct( p, plane->normal ) - plane->dist < 0 ];
+	}
+	return ( tree->leafs[-1 - nodenum].contents & CONTENTS_SOLID ) != 0;
+}
+
+static byte DK_GridByte( float v )
+{
+	v = v / DK_LIGHTMAP_OVERBRIGHT + 0.5f;
+	return v > 255 ? 255 : (byte)v;
+}
+
+/*
+================
+DK_DilateLightGrid
+
+The renderer blends the 8 grid points around a model and skips empty ones,
+so a small room whose surrounding points all sit in walls goes black. Give
+empty points the average of their lit neighbours, a few times over.
+================
+*/
+#define DK_GRID_DILATE_PASSES	2
+
+static void DK_DilateLightGrid( byte *grid, const int bounds[3] )
+{
+	int		pass, x, y, z, dx, dy, dz, i, count, sum[6];
+	int		numPoints = bounds[0] * bounds[1] * bounds[2];
+	byte	*src = malloc( numPoints * 8 );
+
+	for ( pass = 0; pass < DK_GRID_DILATE_PASSES; pass++ )
+	{
+		memcpy( src, grid, numPoints * 8 );
+		for ( z = 0; z < bounds[2]; z++ )
+		for ( y = 0; y < bounds[1]; y++ )
+		for ( x = 0; x < bounds[0]; x++ )
+		{
+			byte *out = grid + ( ( z * bounds[1] + y ) * bounds[0] + x ) * 8;
+
+			if ( out[0] | out[1] | out[2] | out[3] | out[4] | out[5] )
+				continue;
+
+			count = 0;
+			memset( sum, 0, sizeof( sum ) );
+			for ( dz = -1; dz <= 1; dz++ )
+			for ( dy = -1; dy <= 1; dy++ )
+			for ( dx = -1; dx <= 1; dx++ )
+			{
+				const byte *n;
+
+				if ( x + dx < 0 || x + dx >= bounds[0] || y + dy < 0 || y + dy >= bounds[1] || z + dz < 0 || z + dz >= bounds[2] )
+					continue;
+				n = src + ( ( ( z + dz ) * bounds[1] + y + dy ) * bounds[0] + x + dx ) * 8;
+				if ( !( n[0] | n[1] | n[2] | n[3] | n[4] | n[5] ) )
+					continue;
+				for ( i = 0; i < 6; i++ )
+					sum[i] += n[i];
+				count++;
+			}
+			if ( !count )
+				continue;
+			for ( i = 0; i < 6; i++ )
+				out[i] = sum[i] / count;
+			if ( !( out[0] | out[1] | out[2] ) )
+				out[0] = out[1] = out[2] = 1;
+		}
+	}
+	free( src );
+}
+
+static void DK_BuildLightGrid( bspFile_t *bsp, dheader_t *header, const void *data, const msurface_t *faces )
+{
+	dkLightTree_t	tree;
+	vec3_t			origin, p, end, color;
+	int				bounds[3], i, x, y, z;
+	byte			*out;
+
+	tree.nodes = GetLump( header, data, LUMP_NODES );
+	tree.planes = GetLump( header, data, LUMP_PLANES );
+	tree.leafs = GetLump( header, data, LUMP_LEAFS );
+	tree.faces = faces;
+
+	bsp->defaultLightGridSize[0] = 64;
+	bsp->defaultLightGridSize[1] = 64;
+	bsp->defaultLightGridSize[2] = 128;
+
+	// the grid layout R_LoadLightGrid derives from the world bounds
+	for ( i = 0; i < 3; i++ )
+	{
+		float size = bsp->defaultLightGridSize[i];
+
+		origin[i] = size * ceil( bsp->submodels[0].mins[i] / size );
+		bounds[i] = (int)( ( size * floor( bsp->submodels[0].maxs[i] / size ) - origin[i] ) / size ) + 1;
+	}
+
+	bsp->numGridPoints = bounds[0] * bounds[1] * bounds[2];
+	bsp->lightGridData = calloc( bsp->numGridPoints, 8 );
+
+	out = bsp->lightGridData;
+	for ( z = 0; z < bounds[2]; z++ )
+	for ( y = 0; y < bounds[1]; y++ )
+	for ( x = 0; x < bounds[0]; x++, out += 8 )
+	{
+		p[0] = origin[0] + x * bsp->defaultLightGridSize[0];
+		p[1] = origin[1] + y * bsp->defaultLightGridSize[1];
+		p[2] = origin[2] + z * bsp->defaultLightGridSize[2];
+
+		// zero samples are skipped by the renderer, as points in walls should be
+		if ( DK_PointInSolid( &tree, p ) )
+			continue;
+
+		VectorCopy( p, end );
+		end[2] -= DK_LIGHTPOINT_DEPTH;
+		if ( DK_RecursiveLightPoint( &tree, 0, p, end, color ) != 1 )
+			continue;
+
+		DK_ClampLight( color );
+		for ( i = 0; i < 3; i++ )
+		{
+			out[i] = DK_GridByte( color[i] * DK_GRID_AMBIENT );
+			out[3 + i] = DK_GridByte( color[i] * DK_GRID_DIRECTED );
+		}
+		// a byte of 1 keeps very dark but valid samples from being skipped
+		if ( !( out[0] | out[1] | out[2] ) )
+			out[0] = out[1] = out[2] = 1;
+		out[6] = 0;		// longitude and latitude 0: light from straight above
+		out[7] = 0;
+	}
+
+	DK_DilateLightGrid( bsp->lightGridData, bounds );
+
+	Com_Printf( "light grid %d x %d x %d\n", bounds[0], bounds[1], bounds[2] );
+}
+
 bspFile_t *BSP_LoadDK( const bspFormat_t *format, const char *name, const void *data, int length ) {
 	int				i, j, k;
 	dheader_t		header;
@@ -2982,12 +3886,12 @@ bspFile_t *BSP_LoadDK( const bspFormat_t *format, const char *name, const void *
 	}
 
 	int numTexInfo = GetLumpElements( &header, LUMP_TEXINFO, sizeof( realDtexinfo_t ) );
-	mtexinfo_t *texInfo = malloc( numTexInfo * sizeof( *texInfo ) );
+	mtexinfo_t *texInfo = calloc( numTexInfo, sizeof( *texInfo ) );
 
 	int numExtendedSurfInfo = GetLumpElements( &header, LUMP_EXTSURFINFO, sizeof( float ) );
 
 	int numFaces = GetLumpElements( &header, LUMP_FACES, sizeof( realDface_t ) );
-	msurface_t *faces = malloc( numFaces * sizeof( *faces ) );
+	msurface_t *faces = calloc( numFaces, sizeof( *faces ) );
 
 	int numMarkSurfaces = GetLumpElements( &header, LUMP_LEAFFACES, sizeof(unsigned short) );
 	msurface_t **markSurfaces = malloc( numMarkSurfaces * sizeof(*markSurfaces) );
@@ -3214,11 +4118,40 @@ bspFile_t *BSP_LoadDK( const bspFormat_t *format, const char *name, const void *
 			else
 			{
 				char customName[MAX_QPATH];
-				COM_StripExtension(texinfo->image->name, customName);
+				texinfo->generatedShader = DK_GeneratedShaderName( texinfo, customName, sizeof( customName ) );
 				Q_strncpyz(out->shader, customName, sizeof( out->shader ) );
 			}
 		}
 	}
+	// texinfos repeat the same texture and flags for every texture alignment,
+	// Quake 3 BSPs have each shader once (and engines limit them to 1024)
+	{
+		int *remap = malloc( numShaders * sizeof( *remap ) );
+		int numUnique = 0, j;
+
+		for ( i = 0; i < numShaders; i++ ) {
+			dshader_t *sh = &bsp->shaders[i];
+
+			for ( j = 0; j < numUnique; j++ ) {
+				dshader_t *other = &bsp->shaders[j];
+				if ( !Q_stricmp( sh->shader, other->shader ) && sh->surfaceFlags == other->surfaceFlags && sh->contentFlags == other->contentFlags ) {
+					break;
+				}
+			}
+			if ( j == numUnique ) {
+				bsp->shaders[numUnique] = *sh;
+				numUnique++;
+			}
+			remap[i] = j;
+		}
+		for ( i = 0; i < numTexInfo; i++ ) {
+			texInfo[i].shaderNum = remap[texInfo[i].shaderNum];
+		}
+		Com_Printf( "%d texinfos use %d shaders\n", numShaders, numUnique );
+		numShaders = numUnique;
+		free( remap );
+	}
+
 	Q_strncpyz( bsp->shaders[numShaders].shader, "textures/system/outside", sizeof( bsp->shaders[numShaders].shader ) );
 	bsp->shaders[numShaders].contentFlags |= JKA_CONTENTS_OUTSIDE;
 	bsp->shaders[numShaders].surfaceFlags = 0;
@@ -3491,11 +4424,6 @@ bspFile_t *BSP_LoadDK( const bspFormat_t *format, const char *name, const void *
 
 	ConvertSurfaces( bsp, faces, numFaces, texInfo, numTexInfo );
 
-	bsp->defaultLightGridSize[0] = 1.0f;
-	bsp->defaultLightGridSize[1] = 1.0f;
-	bsp->defaultLightGridSize[2] = 1.0f;
-	bsp->lightGridData = NULL;
-	bsp->numGridPoints = 0;
 
 	{
 		realDmodel_t	*in = GetLump( &header, data, LUMP_MODELS );
@@ -3526,11 +4454,11 @@ bspFile_t *BSP_LoadDK( const bspFormat_t *format, const char *name, const void *
 			//if (i >= 5 && i <= 49) {
 			//	MarkOutside( outsideShaderNum, bsp->brushes, bsp->brushSides, bsp->leafBrushes, bsp->nodes, bsp->leafs, 0, out );
 			//}
-			/*
 			int	firstBrush, lastBrush;
 
+			// Quake 2 BSPs reach a model's brushes through its tree, Quake 3 ones
+			// need the range. qbsp writes each entity's brushes in one block.
 			firstBrush = bsp->numBrushes, lastBrush = 0;
-			// FIXME: does it work? doesn't seem to.
 			FindSubmodelBrushRange( bsp->leafBrushes, bsp->nodes, bsp->leafs, headnode, &firstBrush, &lastBrush );
 
 			if (firstBrush <= lastBrush)
@@ -3538,7 +4466,7 @@ bspFile_t *BSP_LoadDK( const bspFormat_t *format, const char *name, const void *
 				out->firstBrush = firstBrush;
 				out->numBrushes = lastBrush + 1 - firstBrush;
 			}
-			else*/
+			else
 			{
 				out->firstBrush = 0;
 				out->numBrushes = 0;
@@ -3569,6 +4497,8 @@ bspFile_t *BSP_LoadDK( const bspFormat_t *format, const char *name, const void *
 			}
 		}
 	}
+
+	DK_BuildLightGrid( bsp, &header, data, faces );
 
 	skybox_t skybox;
 	ConvertEntityString( mapname, bsp, data, &header, &skybox, bsp->submodels[0].mins, bsp->submodels[0].maxs );

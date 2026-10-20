@@ -2231,6 +2231,53 @@ Damage: default is none
 	strcat( modelname, ".md3" );
 	SetKeyValue( ent, "model", modelname );
 
+	// Daikatana gives a deco without a material of its own the one of its
+	// deco info, NO_BREAK for those that have none (STONE, say)
+	if ( !( spawnflags & ( DK_DECO_FLAGS_WOOD | DK_DECO_FLAGS_METAL | DK_DECO_FLAGS_GLASS | DK_DECO_FLAGS_GIB ) ) ) {
+		spawnflags |= deco->gibType;
+	}
+
+	// mint-arena: solid decos are rigid bodies colliding as a hull of their
+	// mesh, those that don't move (movetype none) static ones; the others
+	// stay misc_gamemodels the cgame draws
+	if ( deco->solidType == SOLID_BBOX ) {
+		const char *breakSound = NULL;
+		float health;
+
+		SetKeyValue( ent, "classname", "func_physics" );
+		SetKeyValue( ent, "spawnflags", "0" );
+		SetKeyFloat( ent, "mass", deco->mass > 0.0f ? deco->mass : 50.0f );
+		// Daikatana's box, for a model the game can't make a hull of
+		SetVectorForKey( ent, "mins", deco->mins );
+		SetVectorForKey( ent, "maxs", deco->maxs );
+		if ( deco->moveType == MOVETYPE_NONE ) {
+			SetKeyInteger( ent, "static", 1 );
+		}
+
+		// breakable as in SpawnDeco: a material or exploding, and not NO_BREAK
+		health = FloatForKey( ent, "health" );
+		if ( !health ) {
+			health = deco->hitPoints;
+		}
+		if ( ( ( spawnflags & ( DK_DECO_FLAGS_WOOD | DK_DECO_FLAGS_METAL | DK_DECO_FLAGS_GLASS | DK_DECO_FLAGS_GIB ) )
+				|| deco->exploding || ( spawnflags & DK_DECO_FLAGS_EXPLODE ) )
+				&& !( spawnflags & DK_DECO_FLAGS_NO_BREAK ) && health > 0 ) {
+			SetKeyInteger( ent, "health", (int)health );
+			// Deco_Sound: metal, glass, or wood for the rest
+			if ( spawnflags & DK_DECO_FLAGS_METAL ) {
+				breakSound = "sounds/global/e_metalbreaksa.wav";
+			} else if ( spawnflags & DK_DECO_FLAGS_GLASS ) {
+				breakSound = "sounds/global/e_glassbreaksa.wav";
+			} else {
+				breakSound = "sounds/global/e_woodbreaksa.wav";
+			}
+			SetKeyValue( ent, "breaksound", breakSound );
+		} else {
+			SetKeyValue( ent, "health", "0" );
+		}
+		return;
+	}
+
 	// set other properties
 
 	if ( deco->solidType == SOLID_BBOX ) {

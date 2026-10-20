@@ -95,6 +95,8 @@ typedef struct simplifiedShaderParms_s {
     float		alphaGenConst;
     blendType_t	blend;
     qboolean	lightmapped;
+    qboolean	vertexLit;		// lit by the vertex colours (translucent water)
+    qboolean	turb;			// Daikatana's warping liquids
     cullType_t	cull;
 } simplifiedShaderParms_t;
 

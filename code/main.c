@@ -224,7 +224,8 @@ long FS_ReadFile( const char *filename, void **buffer ) {
 	length = ftell( f );
 	fseek( f, 0, SEEK_SET );
 
-	buf = malloc( length );
+	// one more for the terminating zero the text parsers stop at
+	buf = malloc( length + 1 );
 
 	if ( fread( buf, length, 1, f ) != 1 ) {
 		fclose( f );
@@ -233,6 +234,7 @@ long FS_ReadFile( const char *filename, void **buffer ) {
 	}
 
 	fclose( f );
+	( (char *)buf )[length] = 0;
 
 	*buffer = buf;
 	return length;

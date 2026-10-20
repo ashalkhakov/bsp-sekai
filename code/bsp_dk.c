@@ -1426,6 +1426,71 @@ static qboolean LM_AllocBlock (gllightmapstate_t *lms, int w, int h, int *x, int
 	return qtrue;
 }
 
+/*
+================
+DK_VertexLit
+
+Translucent lit surfaces take their light from vertex colours.
+================
+*/
+static qboolean DK_VertexLit( const mtexinfo_t *tex ) {
+	return ( tex->flags & ( SURF_TRANS33 | SURF_TRANS66 ) ) && !( tex->flags & ( SURF_FULLBRIGHT | SURF_NODRAW ) );
+}
+
+/*
+================
+DK_LightPolyVertexes
+
+Vertex colours from the surface's lightmap, already scaled like it, for
+shaders that light with "rgbGen vertex" (translucent water) and r_vertexLight.
+The surface's lightmap block must still be the one being built.
+================
+*/
+static void DK_LightPolyVertexes( const gllightmapstate_t *lms, msurface_t *surf )
+{
+	glpoly_t	*poly;
+	int			i, c, x0, y0, x1, y1;
+	int			smin, tmin, smax, tmax;
+	float		x, y, fx, fy;
+	const byte	*block = lms->lightmap_buffer;
+
+	if ( surf->lightmaptexturenum < 0 )
+		return;
+
+	// stay inside this surface's luxels so neighbours in the atlas don't bleed in
+	smin = surf->light_s;
+	tmin = surf->light_t;
+	smax = smin + surf->extents[0] / 16;
+	tmax = tmin + surf->extents[1] / 16;
+
+	for ( poly = surf->polys; poly; poly = poly->next )
+	{
+		for ( i = 0; i < poly->numverts; i++ )
+		{
+			drawVert_t *v = &poly->verts[i];
+
+			x = v->lightmap[0][0] * LIGHTMAP_SIZE - 0.5f;
+			y = v->lightmap[0][1] * LIGHTMAP_SIZE - 0.5f;
+			x = x < smin ? smin : ( x > smax ? smax : x );
+			y = y < tmin ? tmin : ( y > tmax ? tmax : y );
+			x0 = (int)x;
+			y0 = (int)y;
+			x1 = x0 < smax ? x0 + 1 : x0;
+			y1 = y0 < tmax ? y0 + 1 : y0;
+			fx = x - x0;
+			fy = y - y0;
+
+			for ( c = 0; c < 3; c++ )
+			{
+				float top = block[( y0 * LIGHTMAP_SIZE + x0 ) * 3 + c] * ( 1 - fx ) + block[( y0 * LIGHTMAP_SIZE + x1 ) * 3 + c] * fx;
+				float bottom = block[( y1 * LIGHTMAP_SIZE + x0 ) * 3 + c] * ( 1 - fx ) + block[( y1 * LIGHTMAP_SIZE + x1 ) * 3 + c] * fx;
+
+				v->color[0][c] = (byte)( top * ( 1 - fy ) + bottom * fy + 0.5f );
+			}
+		}
+	}
+}
+
 void GL_CreateSurfaceLightmap (gllightmapstate_t *lms, msurface_t * surf)
 {
 	int smax, tmax;
@@ -1521,9 +1586,8 @@ static void SkyBoxPrint( skybox_t *box ) {
 	snprintf( editorImage, sizeof( editorImage ), "env/32bit/%s_up.tga", box->sky );
 
 	if ( box->fogValue ) {
-		float c = box->fogEnd - box->fogStart;
-		
-		fogDist = c;
+		// Daikatana's fog is opaque at fog_end, Spearmint's at its distance
+		fogDist = box->fogEnd;
 		fogColor[0] = box->fogColor[0];
 		fogColor[1] = box->fogColor[1];
 		fogColor[2] = box->fogColor[2];
@@ -1559,7 +1623,9 @@ static void SkyBoxFree( skybox_t *box ) {
 		free( box->cloudname );
 }
 
-static qboolean globalFog = qfalse;
+// Daikatana fogs the whole level from the worldspawn (fog_value, fog_color,
+// fog_start, fog_end): the skybox shader gets it as Spearmint's global fog
+static qboolean globalFog = qtrue;
 
 // Daikatana's gl_cloud* cvar defaults, for worldspawns without cloud keys
 #define DK_CLOUD_XDIR		1.0f
@@ -1611,7 +1677,6 @@ static void SkyboxFromEntity( skybox_t *box, entity_t *ent ) {
 	}
 
 	if ( globalFog ) {
-		// doesn't look very good
 		box->fogValue = IntegerForKey( ent, "fog_value" );
 		if ( box->fogValue ) {
 			box->fogStart = FloatForKey( ent, "fog_start" );
@@ -3533,7 +3598,9 @@ static int TexInfoToShaders(
 		if ( texinfo->flags & ( SURF_TRANS33 | SURF_TRANS66 ) ) {
       		shaderParms.blend = BT_BLEND;
 			shaderParms.alphaGenConst = texinfo->flags & SURF_TRANS33 ? 0.33f : 0.66f;
-			shaderParms.cull = CT_NONE;
+			// Daikatana draws only the side of a face that looks at the
+			// viewer; the maps have a face for each side
+			shaderParms.cull = CT_BACK;
 			specialShading = qtrue;
 		} else if ( texinfo->flags & SURF_MIDTEXTURE ) {
 			shaderParms.blend = BT_ALPHATEST;
@@ -3551,7 +3618,14 @@ static int TexInfoToShaders(
 			shaderParms.cull = CT_BACK;
 		}
 
-		if ( texinfo->flags & ( SURF_FULLBRIGHT | SURF_WARP ) ) {
+		// warping liquids are lit like the rest in Daikatana: opaque ones by
+		// their lightmap, translucent ones by their vertexes
+		shaderParms.turb = ( texinfo->flags & SURF_WARP ) ? qtrue : qfalse;
+		shaderParms.vertexLit = DK_VertexLit( texinfo );
+		if ( texinfo->flags & SURF_WARP ) {
+			specialShading = qtrue;
+		}
+		if ( ( texinfo->flags & SURF_FULLBRIGHT ) || shaderParms.vertexLit ) {
 			shaderParms.lightmapped = qfalse;
 			specialShading = qtrue;
 		} else {
@@ -3698,6 +3772,9 @@ static void ProcessFaces(
 			} else {
 				GL_BuildPolygonFromSurface(verts, edges, surfEdges, out);
 			}
+			// while its lightmap block is still the one being built
+			if ( DK_VertexLit( out->texinfo ) )
+				DK_LightPolyVertexes( &gl_lms, out );
 		}
 	}
 
@@ -3792,7 +3869,7 @@ static void ConvertSurfaces( bspFile_t *bsp, msurface_t *faces, int numFaces, mt
 
 				out->numVerts += numVertsInPoly;
 				bsp->numDrawVerts += numVertsInPoly;
-				for (j = 0; j < numVertsInPoly; j++) {
+				for (j = 0; j < numVertsInPoly && !DK_VertexLit( in->texinfo ); j++) {
 					poly->verts[j].color[0][0] = in->texinfo->color[0];
 					poly->verts[j].color[0][1] = in->texinfo->color[1];
 					poly->verts[j].color[0][2] = in->texinfo->color[2];
@@ -3834,7 +3911,7 @@ static void ConvertSurfaces( bspFile_t *bsp, msurface_t *faces, int numFaces, mt
 			}*/
 		}
 
-		out->lightmapNum[0] = in->lightmaptexturenum;
+		out->lightmapNum[0] = DK_VertexLit( in->texinfo ) ? -1 : in->lightmaptexturenum;
 
 		// TODO: is this correct? Q3A does not seem to care about this
 		//out->lightmapX = in->texturemins[0];

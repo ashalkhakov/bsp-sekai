@@ -674,6 +674,13 @@ static void fprint_shader( FILE *fp, shader_t *shader ) {
 		if ( shader->simplifiedShaderParms.alphaGenConst != 1.0f ) {
 			fprintf( fp, "\t\talphaGen const %f\n", shader->simplifiedShaderParms.alphaGenConst );
 		}
+		if ( shader->simplifiedShaderParms.turb ) {
+			// Daikatana's warp: a sine of 1/16 of the texture, a cycle every 2 pi seconds
+			fprintf( fp, "\t\ttcMod turb 0 0.062500 0 0.159155\n" );
+		}
+		if ( shader->simplifiedShaderParms.vertexLit ) {
+			fprintf( fp, "\t\trgbGen exactVertex\n" );
+		}
 		if ( shader->simplifiedShaderParms.texScroll[0] || shader->simplifiedShaderParms.texScroll[1] ) {
 			fprintf( fp, "\t\ttcMod scroll %f %f\n", shader->simplifiedShaderParms.texScroll[0], shader->simplifiedShaderParms.texScroll[1] );
 		}

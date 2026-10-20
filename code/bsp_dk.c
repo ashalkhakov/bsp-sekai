@@ -2846,6 +2846,29 @@ int DK_SurfaceFlagsToJKA( int flags )
 	return result;
 }
 
+#define Q3_SURF_TYPE_SHIFT		20		// Spearmint's surfaceflags.h SURF_TYPE_SHIFT
+
+/*
+================
+DK_SurfaceType
+
+A Daikatana surface's type, Doom 3's numbering (Spearmint's SURFTYPE_*:
+1 metal, 2 stone, 4 wood, 6 liquid, 7 glass, 10 ice, 11 snow, 12 sand),
+in the order Daikatana checks them (p_client.cpp G_SetClientEvent).
+================
+*/
+static int DK_SurfaceType( int flags ) {
+	if ( flags & SURF_WOOD ) return 4;
+	if ( flags & SURF_METAL ) return 1;
+	if ( flags & SURF_STONE ) return 2;
+	if ( flags & SURF_GLASS ) return 7;
+	if ( flags & SURF_ICE ) return 10;
+	if ( flags & SURF_SNOW ) return 11;
+	if ( flags & SURF_PUDDLE ) return 6;
+	if ( flags & SURF_SAND ) return 12;
+	return 0;
+}
+
 int DK_SurfaceFlagsToQuake3( int flags )
 {
 	int result = 0;
@@ -2863,6 +2886,10 @@ int DK_SurfaceFlagsToQuake3( int flags )
 		result |= Q3_SURF_HINT;
 	if (flags & SURF_SKIP)
 		result |= Q3_SURF_SKIP;
+
+	// what it's made of: its surface type in Spearmint's surface flags
+	// (SURF_TYPE_SHIFT), for footsteps and impacts
+	result |= DK_SurfaceType( flags ) << Q3_SURF_TYPE_SHIFT;
 	
 	return result;
 }

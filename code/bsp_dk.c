@@ -2868,9 +2868,14 @@ int DK_ContentsToQuake3( int contents )
 {
 	int result = 0;
 
-	if (contents & CONTENTS_SOLID)
+	// Daikatana's players and shots collide with windows and "clear"
+	// brushes (grates, glass) as with solid ones, MASK_PLAYERSOLID and
+	// MASK_SHOT in dk_shared.h
+	if (contents & (CONTENTS_SOLID | CONTENTS_WINDOW | CONTENTS_CLEAR))
 		result |= Q3_CONTENTS_SOLID;
-//WINDOW
+	// "noshoot" stops players and monsters but not shots
+	if (contents & CONTENTS_NOSHOOT)
+		result |= Q3_CONTENTS_PLAYERCLIP | Q3_CONTENTS_MONSTERCLIP;
 //AUX
 	if (contents & CONTENTS_LAVA)
 		result |= Q3_CONTENTS_LAVA;

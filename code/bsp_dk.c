@@ -2648,6 +2648,8 @@ static void ProcessEntity( bspFile_t *bsp, const char *mapname, vec3_t worldMins
 		AppendKeyValueMatching( ent, "sound_open_finish", "sounds/" );
 		AppendKeyValueMatching( ent, "sound_closing", "sounds/" );
 		AppendKeyValueMatching( ent, "sound_opening", "sounds/" );
+	} else if (!strcmp(className, "func_water")) {
+		// keep it: water that moves like a door, the game has it
 	} else if (!strcmp(className, "func_door_rotating")) {
 		// keep it
 	} else if (!strcmp(className, "func_train")) {
@@ -3294,6 +3296,34 @@ static void Foo(mtexinfo_t *texinfo, float fWarpTime) {
 
 #if 1
 // NOTE: only for JKA
+/*
+================
+DK_ShaderVariant
+
+The shader entry with the name of shaderNum and these flags, added when
+there isn't one yet. Brushes and their sides take their contents and
+surface flags from these entries; the renderer only goes by the name.
+================
+*/
+static int DK_ShaderVariant( bspFile_t *bsp, int shaderNum, int surfaceFlags, int contentFlags ) {
+	dshader_t	*base = &bsp->shaders[shaderNum];
+	int			i;
+
+	for ( i = 0; i < bsp->numShaders; i++ ) {
+		if ( bsp->shaders[i].surfaceFlags == surfaceFlags && bsp->shaders[i].contentFlags == contentFlags &&
+			!strcmp( bsp->shaders[i].shader, base->shader ) ) {
+			return i;
+		}
+	}
+
+	bsp->shaders = realloc( bsp->shaders, ( bsp->numShaders + 1 ) * sizeof( *bsp->shaders ) );
+	base = &bsp->shaders[shaderNum];
+	bsp->shaders[bsp->numShaders] = *base;
+	bsp->shaders[bsp->numShaders].surfaceFlags = surfaceFlags;
+	bsp->shaders[bsp->numShaders].contentFlags = contentFlags;
+	return bsp->numShaders++;
+}
+
 void MarkOutside( int outsideShaderNum, dbrush_t *brushes, dbrushside_t *brushSides, int *leafBrushes, dnode_t *nodes, dleaf_t *leafs, int node, dmodel_t *dm ) {
 	int i;
 	dleaf_t *pleaf;
@@ -4354,25 +4384,24 @@ bspFile_t *BSP_LoadDK( const bspFormat_t *format, const char *name, const void *
 				contentFlags = DK_ContentsToQuake3( contents );
 			}
 
-			for (j = 0; j < out->numSides; j++) {
-				dbrushside_t *side = &bsp->brushSides[ out->firstSide + j ];
+			// Q2/DK give ladders as brush contents, Q3 as the surface flags of
+			// the sides the player touches
+			if ( contents & CONTENTS_LADDER ) {
+				for (j = 0; j < out->numSides; j++) {
+					dbrushside_t *side = &bsp->brushSides[ out->firstSide + j ];
 
-				// HACK: for ladders. Q2/DK use contents for a ladder brush,
-				// but Q3 uses surface flags for that.
-				// the issue is that we should have already defined shaders at this point.
-				if ( contents & CONTENTS_LADDER ) {
-					bsp->shaders[side->shaderNum].surfaceFlags |= Q3_SURF_LADDER;
+					side->shaderNum = DK_ShaderVariant( bsp, side->shaderNum,
+						bsp->shaders[side->shaderNum].surfaceFlags | Q3_SURF_LADDER,
+						bsp->shaders[side->shaderNum].contentFlags );
 				}
-
-				// HACK: we don't know at the point of shader definition
-				// if it should be e.g. water or not.
-				// TODO: brushes should be the source of truth regarding content flags.
-				// content flags should flow like this:
-				//    brush -> brushside -> face -> texinfo -> shader
-				bsp->shaders[side->shaderNum].contentFlags = contentFlags;
 			}
-			
-			out->shaderNum = bsp->brushSides[out->firstSide].shaderNum;
+
+			// Quake 3 takes a brush's contents from its shader. Shaders are
+			// shared by many brushes, so each brush gets a shader entry with
+			// its own contents: setting them on the shared one let the last
+			// brush decide for all (solid hint brushes, water that isn't)
+			out->shaderNum = DK_ShaderVariant( bsp, bsp->brushSides[out->firstSide].shaderNum,
+				bsp->shaders[bsp->brushSides[out->firstSide].shaderNum].surfaceFlags, contentFlags );
 		}
 	}
 

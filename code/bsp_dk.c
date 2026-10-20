@@ -4503,12 +4503,23 @@ bspFile_t *BSP_LoadDK( const bspFormat_t *format, const char *name, const void *
 			// Q2/DK give ladders as brush contents, Q3 as the surface flags of
 			// the sides the player touches
 			if ( contents & CONTENTS_LADDER ) {
+				qboolean invisible = qtrue;
+
 				for (j = 0; j < out->numSides; j++) {
 					dbrushside_t *side = &bsp->brushSides[ out->firstSide + j ];
 
+					if ( !( bsp->shaders[side->shaderNum].surfaceFlags & Q3_SURF_NODRAW ) ) {
+						invisible = qfalse;
+					}
 					side->shaderNum = DK_ShaderVariant( bsp, side->shaderNum,
 						bsp->shaders[side->shaderNum].surfaceFlags | Q3_SURF_LADDER,
 						bsp->shaders[side->shaderNum].contentFlags );
+				}
+				// Daikatana's ladders are often an invisible box in front of
+				// the rungs: player clip, so players climb it but shots, and
+				// the game's traces for the rungs a climber holds, go through
+				if ( invisible && ( contentFlags & Q3_CONTENTS_SOLID ) ) {
+					contentFlags = ( contentFlags & ~Q3_CONTENTS_SOLID ) | Q3_CONTENTS_PLAYERCLIP;
 				}
 			}
 

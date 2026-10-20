@@ -2608,6 +2608,57 @@ static qboolean dkent_pickup( entity_t *ent, const char *className )
 		|| !Q_stricmp( className, "item_chromatic_armor" ) || !Q_stricmp( className, "item_wraithorb" );
 }
 
+// Daikatana's func_explosive spawnflags
+#define DK_EXPL_TRIGGER_SPAWN		0x0001
+#define DK_EXPL_STONE				0x0008
+#define DK_EXPL_WOOD				0x0010
+#define DK_EXPL_METAL				0x0020
+#define DK_EXPL_NO_SOUND			0x0080
+#define DK_EXPL_NO_EXPLOSION		0x0100
+
+// mint-arena func_breakable: an explosion when it breaks
+#define BREAKABLE_EXPLOSION			8192
+
+/*
+================
+dkent_func_explosive
+
+A brush that breaks when shot, or when used if targeted: mint-arena's
+func_breakable, with the break sound of its material and an explosion when
+it does damage (Daikatana makes any damage under 90 a 100).
+================
+*/
+static void dkent_func_explosive( entity_t *ent )
+{
+	int		spawnflags = IntegerForKey( ent, "spawnflags" );
+	int		damage = IntegerForKey( ent, "damage" );
+	int		q3Spawnflags = 0;
+
+	SetKeyValue( ent, "classname", "func_breakable" );
+
+	if ( !ValueForKey( ent, "health" )[0] ) {
+		SetKeyInteger( ent, "health", 100 );
+	}
+	if ( damage > 0 ) {
+		SetKeyInteger( ent, "dmg", damage < 90 ? 100 : damage );
+		if ( !( spawnflags & DK_EXPL_NO_EXPLOSION ) ) {
+			q3Spawnflags |= BREAKABLE_EXPLOSION;
+		}
+	}
+	if ( !( spawnflags & DK_EXPL_NO_SOUND ) ) {
+		if ( spawnflags & DK_EXPL_STONE ) {
+			SetKeyValue( ent, "breaksound", "sounds/global/e_rocktumble1.wav" );
+		} else if ( spawnflags & DK_EXPL_METAL ) {
+			SetKeyValue( ent, "breaksound", "sounds/global/e_metalbreaksa.wav" );
+		} else if ( spawnflags & DK_EXPL_WOOD ) {
+			SetKeyValue( ent, "breaksound", "sounds/global/e_woodbreaksa.wav" );
+		} else {
+			SetKeyValue( ent, "breaksound", "sounds/global/e_glassbreaksa.wav" );
+		}
+	}
+	SetKeyInteger( ent, "spawnflags", q3Spawnflags );
+}
+
 static void dkent_worldspawn( const char *mapname, vec3_t worldMins, vec3_t worldMaxs, entity_t *ent )
 {
 	int			i;
@@ -2699,6 +2750,9 @@ static void ProcessEntity( bspFile_t *bsp, const char *mapname, vec3_t worldMins
 	//else if (!strcmp(className, "func_areaportal")) {
 	//	// remove it
 	//}
+	else if (!strcmp(className, "func_explosive")) {
+		dkent_func_explosive( ent );
+	}
 	else if (!strcmp(className, "func_button")) {
 		// keep it
 	}

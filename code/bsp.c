@@ -1,3 +1,4 @@
+#include <string.h>
 /*
 ===========================================================================
 Copyright (C) 1999-2010 id Software LLC, a ZeniMax Media company.
@@ -64,7 +65,14 @@ COM_StripExtension
 ============
 */
 void COM_StripExtension( const char *in, char *out ) {
-	while ( *in && *in != '.' ) {
+	const char *dot = strrchr( in, '.' );
+	const char *slash = strrchr( in, '/' );
+
+	// only a dot in the file name starts the extension, not one in "../"
+	if ( !dot || ( slash && dot < slash ) ) {
+		dot = in + strlen( in );
+	}
+	while ( in < dot ) {
 		*out++ = *in++;
 	}
 	*out = 0;

@@ -1260,6 +1260,21 @@ then normalize into GL format in gl_lms.lightmap_buffer.
 
 static float s_blocklights[LM_BLOCKLIGHTS_SIZE];		// intermediate RGB buffer for combining multiple lightmaps
 
+#define DK_LIGHTMAP_MODULATE	2.0f	// gl_modulate default
+#define DK_LIGHTMAP_OVERBRIGHT	4.0f	// 1 << r_mapOverBrightBits default
+
+// scale a colour down so its brightest channel is at most 255
+static void DK_ClampLight( float *c ) {
+	float cmax = c[0] > c[1] ? c[0] : c[1];
+
+	cmax = c[2] > cmax ? c[2] : cmax;
+	if ( cmax > 255 ) {
+		c[0] *= 255 / cmax;
+		c[1] *= 255 / cmax;
+		c[2] *= 255 / cmax;
+	}
+}
+
 void R_BuildLightMap (gllightmapstate_t *lms, msurface_t *surf, int stride) {
 	int smax, tmax;
 	int r, g, b, cmax;
@@ -1278,35 +1293,44 @@ void R_BuildLightMap (gllightmapstate_t *lms, msurface_t *surf, int stride) {
 	if (size > ((sizeof(float) * LM_BLOCKLIGHTS_SIZE) / 16))
 		Com_Error(ERR_DROP, "R_BuildLightMap(): bad lms->blocklights size.");
 
-	if ( surf->samples ) {
-		for ( k = 0; k < DK_MAXLIGHTMAPS && surf->styles[k] != 255; k++ )
-			;
-		numlightmaps = k;
-		if ( numlightmaps > 1) {
-			// woah
-			// so samples is actually numlightmaps * size array
-			// and we need to upload all of those, assigning to each their own coordinates in a possibly the same atlas
-		}
-	}
-
-	k = 0;
+	// Daikatana's renderer adds up every lightmap block of a face (all style 0
+	// in practice) and scales the sum by gl_modulate (2). Faces without light
+	// data are drawn at full brightness.
 	if (surf->samples)
 	{
+		numlightmaps = 0;
+		while ( numlightmaps < DK_MAXLIGHTMAPS && surf->styles[numlightmaps] != 255 )
+			numlightmaps++;
+
+		memset( s_blocklights, 0, sizeof( s_blocklights[0] ) * size * 3 );
 		lm = surf->samples;
-		bl = s_blocklights;
-		for (i = 0; i < size; i++, bl += 3, lm += 3)
+		for ( k = 0; k < numlightmaps; k++ )
 		{
-			bl[0] = lm[0];
-			bl[1] = lm[1];
-			bl[2] = lm[2];
+			bl = s_blocklights;
+			for (i = 0; i < size; i++, bl += 3, lm += 3)
+			{
+				bl[0] += lm[0] * DK_LIGHTMAP_MODULATE;
+				bl[1] += lm[1] * DK_LIGHTMAP_MODULATE;
+				bl[2] += lm[2] * DK_LIGHTMAP_MODULATE;
+			}
 		}
 	}
 	else
 	{
-		// set to full bright if no light data
 		for (i = 0; i < size * 3; i++)
 			s_blocklights[i] = 255.f;
 	}
+
+	// Daikatana clamps the light at 1.0 keeping its hue, and the maps are lit
+	// for that: brighter spots saturate textures badly with overbright.
+	// Quake 3 draws lightmaps at 2^r_mapOverBrightBits (4 by default) times
+	// their stored value, so store a quarter of it.
+	bl = s_blocklights;
+	for (i = 0; i < size; i++, bl += 3)
+		DK_ClampLight( bl );
+	bl = s_blocklights;
+	for (i = 0; i < size * 3; i++)
+		bl[i] *= 1.0f / DK_LIGHTMAP_OVERBRIGHT;
 
 	//
 	// put into texture format
@@ -1537,6 +1561,19 @@ static void SkyBoxFree( skybox_t *box ) {
 
 static qboolean globalFog = qfalse;
 
+// Daikatana's gl_cloud* cvar defaults, for worldspawns without cloud keys
+#define DK_CLOUD_XDIR		1.0f
+#define DK_CLOUD_YDIR		0.8f
+#define DK_CLOUD1_TILE		8.0f
+#define DK_CLOUD1_SPEED		1.0f
+#define DK_CLOUD2_TILE		2.0f
+#define DK_CLOUD2_SPEED		4.0f
+#define DK_CLOUD2_ALPHA		0.7f
+
+static float SkyFloatForKey( entity_t *ent, const char *key, float defaultValue ) {
+	return *ValueForKey( ent, key ) ? FloatForKey( ent, key ) : defaultValue;
+}
+
 static void SkyboxFromEntity( skybox_t *box, entity_t *ent ) {
 	const char *sky;
 	const char *cloudname;
@@ -1549,13 +1586,14 @@ static void SkyboxFromEntity( skybox_t *box, entity_t *ent ) {
 	if ( *sky ) {
 		box->sky = copystring( sky );
 
-		box->cloudxdir = FloatForKey( ent, "cloudxdir" );
-		box->cloudydir = FloatForKey( ent, "cloudydir" );
-		box->cloud1tile = FloatForKey( ent, "cloud1tile" );
-		box->cloud1speed = FloatForKey( ent, "cloud1speed" );
-		box->cloud2tile = FloatForKey( ent, "cloud2tile" );
-		box->cloud2speed = FloatForKey( ent, "cloud2speed" );
-		box->cloud2alpha = FloatForKey( ent, "cloud2alpha" );
+		// most maps leave these out and get the renderer's gl_cloud* defaults
+		box->cloudxdir = SkyFloatForKey( ent, "cloudxdir", DK_CLOUD_XDIR );
+		box->cloudydir = SkyFloatForKey( ent, "cloudydir", DK_CLOUD_YDIR );
+		box->cloud1tile = SkyFloatForKey( ent, "cloud1tile", DK_CLOUD1_TILE );
+		box->cloud1speed = SkyFloatForKey( ent, "cloud1speed", DK_CLOUD1_SPEED );
+		box->cloud2tile = SkyFloatForKey( ent, "cloud2tile", DK_CLOUD2_TILE );
+		box->cloud2speed = SkyFloatForKey( ent, "cloud2speed", DK_CLOUD2_SPEED );
+		box->cloud2alpha = SkyFloatForKey( ent, "cloud2alpha", DK_CLOUD2_ALPHA );
 
 		float timeval = 1.0f/256.0f;
 		box->height = SKY_BOX_SIZE * 0.5;
@@ -1579,7 +1617,11 @@ static void SkyboxFromEntity( skybox_t *box, entity_t *ent ) {
 			box->fogStart = FloatForKey( ent, "fog_start" );
 			box->fogEnd = FloatForKey( ent, "fog_end" );
 			box->fogSkyEnd = FloatForKey( ent, "fog_skyend" );
-			if ( GetVectorForKey( ent, "fog_color", box->fogColor ) ) {
+			// Daikatana divides fog_color by 255, but the maps give it as 0-1
+			// fractions, so its fog comes out black. Use the colour the mapper
+			// picked; without one the fog stays black.
+			if ( GetVectorForKey( ent, "fog_color", box->fogColor ) &&
+				( box->fogColor[0] > 1 || box->fogColor[1] > 1 || box->fogColor[2] > 1 ) ) {
 				box->fogColor[0] *= 1.0f / 255.0f;
 				box->fogColor[1] *= 1.0f / 255.0f;
 				box->fogColor[2] *= 1.0f / 255.0f;
@@ -1639,6 +1681,16 @@ static void dkent_target_speaker( entity_t *ent )
 		sound1 = ValueForKey( ent, "sound" );
 	}
 	SetKeyValue( ent, "noise", sound1 );
+
+	// only the looping bits mean the same thing; the higher Quake 3 bits
+	// (global, activator, vis_multiple) would misfire, e.g. vis_multiple
+	// needs a target and aborts the map load without one
+	{
+		char	flags[16];
+
+		sprintf( flags, "%d", IntegerForKey( ent, "spawnflags" ) & 3 );
+		SetKeyValue( ent, "spawnflags", flags );
+	}
 
 	sound1 = ValueForKey( ent, "noise" );
 	if ( !*sound1 ) {
@@ -2051,7 +2103,8 @@ static void dkent_light( entity_t *ent ) {
 #define BR_FLAGS_NO_EXPLOSION	128 // By default, will explode when it dies...this is your override.
 #define BR_FLAGS_START_OFF		256 // Will start off and will not appear until used.
 
-static void dkent_deco_e1( entity_t *ent )
+// deco_e1 .. deco_e4: the model and its properties come from the episode's decoinfo.csv
+static void dkent_deco( entity_t *ent, int episode )
 {
 	// NOTE: this entity is only for JKA
 
@@ -2101,9 +2154,11 @@ Damage: default is none
 	decoInfo_t *deco;
 
 	name =  ValueForKey( ent, "model" );
-	deco = GetDeco( 0, name );
+	deco = GetDeco( episode, name );
 	if ( deco == NULL ) {
-		Com_Error( ERR_DROP, "Unknown deco %s", name );
+		Com_Printf( "WARNING: unknown deco %s in episode %d, removed\n", name, episode + 1 );
+		FreeEntity( ent );
+		return;
 	}
 
 	COM_StripExtension( deco->path, modelname );
@@ -2295,6 +2350,131 @@ static void dkent_item_wraithorb( entity_t *ent ) {
 	SetKeyValue( ent, "classname", "item_invis" );
 }
 
+/*
+===============================================================================
+
+ITEMS
+
+Daikatana's weapons, ammo and pickups become the Quake 3 item that plays the
+same role, and keep their own look through the "model" key (mint-arena draws
+it instead of the item's model). Health and armor models depend on the episode.
+The episode 1 items with their own dkent_item_* function above are left to it.
+
+===============================================================================
+*/
+
+typedef struct {
+	const char	*dkClass;
+	const char	*q3Class;	// NULL: not in deathmatch, removed
+	const char	*model;		// %d is the episode
+} dkItem_t;
+
+static const dkItem_t dkItems[] = {
+	// melee
+	{ "weapon_gashands",	"weapon_gauntlet",			"models/e1/a_gashand.md3" },
+	{ "weapon_hammer",		"weapon_gauntlet",			"models/e2/a_hammer.md3" },
+	{ "weapon_silverclaw",	"weapon_gauntlet",			"models/e3/a_claw.md3" },
+	{ "weapon_daikatana",	"weapon_gauntlet",			"models/global/a_daikatana.md3" },
+	// episode 1
+	{ "weapon_ionblaster",	"weapon_plasmagun",			"models/e1/a_ion.md3" },
+	{ "weapon_c4viz",		"weapon_grenadelauncher",	"models/e1/a_c4.md3" },
+	{ "weapon_shotcycler",	"weapon_shotgun",			"models/e1/a_shot.md3" },
+	{ "weapon_sidewinder",	"weapon_rocketlauncher",	"models/e1/a_swindr.md3" },
+	{ "weapon_shockwave",	"weapon_bfg",				"models/e1/a_shokwv.md3" },
+	// episode 2
+	{ "weapon_discus",		"weapon_grenadelauncher",	"models/e2/a_discus.md3" },
+	{ "weapon_venomous",	"weapon_plasmagun",			"models/e2/a_venom.md3" },
+	{ "weapon_sunflare",	"weapon_rocketlauncher",	"models/e2/a_sflare.md3" },
+	{ "weapon_trident",		"weapon_shotgun",			"models/e2/a_tri.md3" },
+	{ "weapon_zeus",		"weapon_lightning",			"models/e2/a_zeus.md3" },
+	// episode 3
+	{ "weapon_bolter",		"weapon_machinegun",			"models/e3/a_bolter.md3" },
+	{ "weapon_ballista",	"weapon_railgun",			"models/e3/a_bal.md3" },
+	{ "weapon_stavros",		"weapon_rocketlauncher",	"models/e3/a_stav.md3" },
+	{ "weapon_wyndrax",		"weapon_lightning",			"models/e3/a_wyndrx.md3" },
+	{ "weapon_nightmare",	"weapon_bfg",				"models/e3/a_nmare.md3" },
+	// episode 4
+	{ "weapon_glock",		"weapon_machinegun",		"models/e4/a_glock.md3" },
+	{ "weapon_slugger",		"weapon_shotgun",			"models/e4/a_slug.md3" },
+	{ "weapon_ripgun",		"weapon_plasmagun",			"models/e4/a_ripgun.md3" },
+	{ "weapon_kineticore",	"weapon_grenadelauncher",	"models/e4/a_kcore.md3" },
+	{ "weapon_novabeam",	"weapon_railgun",			"models/e4/a_nova.md3" },
+	{ "weapon_metamaser",	"weapon_bfg",				"models/e4/a_mmaser.md3" },
+
+	// ammo goes with the weapon that uses it; only base Quake 3 weapons, the
+	// Team Arena ones are missing outside the missionpack build
+	{ "ammo_ionpack",		"ammo_cells",				"models/e1/wa_ion.md3" },
+	{ "ammo_c4",			"ammo_grenades",			"models/e1/wa_c4.md3" },
+	{ "ammo_shells",		"ammo_shells",				"models/e1/wa_shot6.md3" },
+	{ "ammo_rockets",		"ammo_rockets",				"models/e1/wa_swindr.md3" },
+	{ "ammo_shocksphere",	"ammo_bfg",					"models/e1/wa_shokwv.md3" },
+	{ "ammo_discus",		"ammo_grenades",			"models/e2/a_discus.md3" },	// no ammo model, DK reuses the weapon
+	{ "ammo_venomous",		"ammo_cells",				"models/e2/wa_venom.md3" },
+	{ "ammo_sunflare",		"ammo_rockets",				"models/e2/a_sflare.md3" },
+	{ "ammo_tritips",		"ammo_shells",				"models/e2/wa_trident.md3" },
+	{ "ammo_zeus",			"ammo_lightning",			"models/e2/wa_zeus.md3" },
+	{ "ammo_bolts",			"ammo_bullets",				"models/e3/wa_bolt.md3" },
+	{ "ammo_ballista",		"ammo_slugs",				"models/e3/wa_bal.md3" },
+	{ "ammo_stavros",		"ammo_rockets",				"models/e3/wa_stav.md3" },
+	{ "ammo_wisp",			"ammo_lightning",			"models/e3/a_wyndrx.md3" },
+	{ "ammo_bullets",		"ammo_bullets",				"models/e4/wa_glock.md3" },
+	{ "ammo_slugger",		"ammo_shells",				"models/e4/wa_rip.md3" },
+	{ "ammo_cordite",		"ammo_shells",				"models/e4/wa_rip.md3" },
+	{ "ammo_ripgun",		"ammo_cells",				"models/e4/wa_slug.md3" },
+	{ "ammo_kineticore",	"ammo_grenades",			"models/e4/wa_kcore.md3" },
+	{ "ammo_novabeam",		"ammo_slugs",				"models/e4/wa_nova.md3" },
+	{ "ammo_metamaser",		"ammo_bfg",					"models/e4/a_mmaser.md3" },
+
+	// health and armor
+	{ "item_silver_armor",		"item_armor_combat",	"models/e%d/a%d_ar1.md3" },
+	{ "item_chainmail_armor",	"item_armor_combat",	"models/e%d/a%d_ar1.md3" },
+	{ "item_kevlar_armor",		"item_armor_combat",	"models/e%d/a%d_ar1.md3" },
+	{ "item_gold_armor",		"item_armor_body",		"models/e%d/a%d_ar2.md3" },
+	{ "item_black_adamant_armor",	"item_armor_body",	"models/e%d/a%d_ar2.md3" },
+	{ "item_ebonite_armor",		"item_armor_body",		"models/e%d/a%d_ar2.md3" },
+
+	// artifacts: Daikatana's permanent boosts become timed powerups
+	{ "item_power_boost",	"item_quad",				"models/global/a_pwrb.md3" },
+	{ "item_attack_boost",	"item_haste",				"models/global/a_atkb.md3" },
+	{ "item_speed_boost",	"item_haste",				"models/global/a_spdb.md3" },
+	{ "item_acro_boost",	"item_haste",				"models/global/a_acrb.md3" },
+	{ "item_vita_boost",	"item_regen",				"models/global/a_vtlb.md3" },
+	{ "item_megashield",	"item_enviro",				"models/global/a_mshield.md3" },
+	{ "item_invincibility",	"item_enviro",				"models/global/a_invincibility.md3" },
+	{ "item_antidote",		"holdable_medkit",			"models/global/a_antidote.md3" },
+
+	// treasure chests only matter in single player
+	{ "item_black_chest",	NULL,						NULL },
+	{ "item_wood_chest",	NULL,						NULL },
+};
+
+static int dk_episode = 1;	// from worldspawn, picks health and armor models
+
+static qboolean dkent_item( entity_t *ent, const char *className )
+{
+	char	model[MAX_QPATH];
+	int		i;
+
+	for ( i = 0; i < (int)( sizeof( dkItems ) / sizeof( dkItems[0] ) ); i++ ) {
+		const dkItem_t *item = &dkItems[i];
+
+		if ( Q_stricmp( className, item->dkClass ) ) {
+			continue;
+		}
+		if ( !item->q3Class ) {
+			FreeEntity( ent );
+			return qtrue;
+		}
+		if ( item->model ) {
+			snprintf( model, sizeof( model ), item->model, dk_episode, dk_episode );
+			SetKeyValue( ent, "model", model );
+		}
+		SetKeyValue( ent, "classname", item->q3Class );
+		return qtrue;
+	}
+	return qfalse;
+}
+
 static void dkent_worldspawn( const char *mapname, vec3_t worldMins, vec3_t worldMaxs, entity_t *ent )
 {
 	int			i;
@@ -2304,6 +2484,12 @@ static void dkent_worldspawn( const char *mapname, vec3_t worldMins, vec3_t worl
 	};
 
 	RenameKeys( ent, sizeof( pairs ) / sizeof( *pairs ), pairs );
+
+	// item models are per episode; maps name it, or it's the digit in "eNdm1"
+	dk_episode = IntegerForKey( ent, "episode" );
+	if ( dk_episode < 1 || dk_episode > 4 ) {
+		dk_episode = ( mapname[0] == 'e' && mapname[1] >= '1' && mapname[1] <= '4' ) ? mapname[1] - '0' : 1;
+	}
 
 	// loadscreen: says which load screen to use
 	// but Q3 always picks map name instead
@@ -2342,14 +2528,21 @@ static void ProcessEntity( bspFile_t *bsp, const char *mapname, vec3_t worldMins
 	if (!strcmp(className, "worldspawn")) {
 		dkent_worldspawn( mapname, worldMins, worldMaxs, ent );
 	}
-	else if (!strcmp(className, "info_player_start")) {
-		// keep it
+	else if (!strcmp(className, "info_player_start") || !strcmp(className, "info_player_deathmatch")
+		|| !strcmp(className, "info_player_intermission") || !strcmp(className, "trigger_teleport")) {
+		// same entity in Quake 3
+	}
+	else if (!strcmp(className, "info_teleport_destination")) {
+		SetKeyValue( ent, "classname", "misc_teleporter_dest" );
 	}
 	else if (!strcmp(className, "effect_rain")) {
 		dkent_effect_rain( ent );
 	}
-	else if (!strcmp(className, "deco_e1")) {
-		dkent_deco_e1( ent );
+	else if (!strcmp(className, "effect_snow")) {
+		// mint-arena's cgame makes snow volumes from it as is
+	}
+	else if (!strncmp(className, "deco_e", 6) && className[6] >= '1' && className[6] <= '4' && !className[7]) {
+		dkent_deco( ent, className[6] - '1' );
 	}
 	else if (!strcmp(className, "light")) {
 		dkent_light( ent );
@@ -2432,6 +2625,8 @@ static void ProcessEntity( bspFile_t *bsp, const char *mapname, vec3_t worldMins
 		dkent_item_chromatic_armor( ent );
 	} else if (!strcmp(className, "item_wraithorb")) {
 		dkent_item_wraithorb( ent );
+	} else if (dkent_item( ent, className )) {
+		// converted or removed
 	} else {
 		// remove it
 		FreeEntity( ent );
@@ -2450,11 +2645,14 @@ static void ConvertEntityString(const char *mapname, bspFile_t *bsp, const void 
 
 	CopyLump( header, LUMP_ENTITIES, data, mapEntityString, mapEntityStringSize, qfalse ); /* NO SWAP */	
 
-#if 1
-	FILE *fp = fopen("/home/deck/Documents/proj/dk-restoration/dkres/maps/entities.txt", "wb");
-	fwrite(mapEntityString, 1, mapEntityStringSize, fp);
-	fclose(fp);
-#endif
+	// dump the entities next to the output for debugging, if the directory exists
+	{
+		FILE *fp = fopen( "maps/entities.txt", "wb" );
+		if ( fp ) {
+			fwrite( mapEntityString, 1, mapEntityStringSize, fp );
+			fclose( fp );
+		}
+	}
 
 	ParseEntities( mapEntityString, mapEntityStringSize );
 
@@ -3020,11 +3218,13 @@ static void Foo(mtexinfo_t *texinfo, float fWarpTime) {
 		AppendToBuffer( &stringbuf, "}\n" );
 	}
 #endif
-	filedatasize = stringbuf.cur - stringbuf.buf + 1;
+	filedatasize = stringbuf.cur - stringbuf.buf;
 
-	bsp->shaderStringLength = filedatasize + 1;
+	// the file gets the text without its terminator
+	bsp->shaderStringLength = filedatasize;
 	bsp->shaderString = malloc( filedatasize + 1 );
-	Q_strncpyz( bsp->shaderString, filedata, filedatasize );
+	memcpy( bsp->shaderString, filedata, filedatasize );
+	bsp->shaderString[filedatasize] = '\0';
 }
 
 #if 1
@@ -3889,12 +4089,12 @@ bspFile_t *BSP_LoadDK( const bspFormat_t *format, const char *name, const void *
 	}
 
 	int numTexInfo = GetLumpElements( &header, LUMP_TEXINFO, sizeof( realDtexinfo_t ) );
-	mtexinfo_t *texInfo = malloc( numTexInfo * sizeof( *texInfo ) );
+	mtexinfo_t *texInfo = calloc( numTexInfo, sizeof( *texInfo ) );
 
 	int numExtendedSurfInfo = GetLumpElements( &header, LUMP_EXTSURFINFO, sizeof( float ) );
 
 	int numFaces = GetLumpElements( &header, LUMP_FACES, sizeof( realDface_t ) );
-	msurface_t *faces = malloc( numFaces * sizeof( *faces ) );
+	msurface_t *faces = calloc( numFaces, sizeof( *faces ) );
 
 	int numMarkSurfaces = GetLumpElements( &header, LUMP_LEAFFACES, sizeof(unsigned short) );
 	msurface_t **markSurfaces = malloc( numMarkSurfaces * sizeof(*markSurfaces) );

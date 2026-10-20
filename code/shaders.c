@@ -567,6 +567,10 @@ void DefineSimplifiedShader( const char *name, const char *diffuseImage, simplif
     mapShaderSource->newShaders = sh;
 }
 
+// Quake 3 draws the skybox and "rgbGen identity" at tr.identityLight, 0.5
+// with the default r_overBrightBits 1
+#define SKY_IDENTITY_LIGHT	0.5f
+
 static void fprint_shader( FILE *fp, shader_t *shader ) {
 	int		i;
 
@@ -588,31 +592,45 @@ static void fprint_shader( FILE *fp, shader_t *shader ) {
 		{
 			skyBoxShader_t		*box;
 			skyBoxShaderLayer_t	*layer;
+			char				skyName[MAX_QPATH];
+			float				secondAlpha, weight;
 
  			box = &shader->skyBox;
 
 			fprintf( fp, "\tqer_editorimage %s\n", shader->editorImage );
 			fprintf( fp, "\tsurfaceparm noimpact\n" "\tsurfaceparm nolightmap\n" "\tsurfaceparm sky\n");
-			fprintf( fp, "\tskyparms - %f %s\n", box->height, box->sky );
+			// Daikatana draws the clouds first and the skybox over them, letting
+			// them through where its alpha is low. Quake 3 renderers only draw the
+			// outer box, before the cloud stages: keep its alpha in the
+			// framebuffer, premultiply by it, then add the clouds behind it.
+			COM_StripExtension( box->sky, skyName );
+			fprintf( fp, "\tskyparms %s %d -\n", skyName, (int)box->height );
 
 			if ( shader->fogParms[3] > 0.0f ) {
 				fprintf( fp, "\tfogvars ( %f %f %f ) %f\n", shader->fogParms[0], shader->fogParms[1], shader->fogParms[2], shader->fogParms[3] );
 			}
 
+			if ( box->numLayers > 0 ) {
+				fprintf( fp, "\t{\n\t\tmap $whiteimage\n\t\tblendFunc GL_ZERO GL_DST_ALPHA\n\t}\n" );
+			}
+
+			// the second layer is blended over the first at its alpha
+			secondAlpha = box->numLayers > 1 ? box->layers[1].alphaGenConst : 0.0f;
+
 			layer = box->layers;
 			for ( i = 0; i < box->numLayers ; i++, layer++ ) {
-				fprintf( fp, "\t\t{\n" );
-				fprintf( fp, "\t\t\tmap %s\n", layer->map );
+				// rgbGen const isn't scaled by the identity light (0.5) the
+				// skybox gets, so scale it here
+				weight = ( i == 0 ? 1.0f - secondAlpha : layer->alphaGenConst ) * SKY_IDENTITY_LIGHT;
 
-				if ( layer->alphaGenConst != 1 ) {
-					fprintf( fp, "\t\t\talphaGen const %f\n", layer->alphaGenConst );
-					fprintf( fp, "\t\t\tblendFunc GL_SRC_ALPHA GL_ONE_MINUS_SRC_ALPHA\n" );
-				}
-
-				fprintf( fp, "\t\t\ttcmod scale %f %f\n", layer->tcScale[0], layer->tcScale[1] );
-				fprintf( fp, "\t\t\ttcmod scroll %f %f\n", layer->tcScroll[0], layer->tcScroll[1] );
-
-				fprintf( fp, "\t\t}\n" );
+				fprintf( fp, "\t{\n" );
+				fprintf( fp, "\t\tmap %s\n", layer->map );
+				fprintf( fp, "\t\tblendFunc GL_ONE_MINUS_DST_ALPHA GL_ONE\n" );
+				fprintf( fp, "\t\trgbGen const ( %f %f %f )\n", weight, weight, weight );
+				fprintf( fp, "\t\talphaGen const 0\n" );
+				fprintf( fp, "\t\ttcmod scale %f %f\n", layer->tcScale[0], layer->tcScale[1] );
+				fprintf( fp, "\t\ttcmod scroll %f %f\n", layer->tcScroll[0], layer->tcScroll[1] );
+				fprintf( fp, "\t}\n" );
 			}
 		}
 		break;

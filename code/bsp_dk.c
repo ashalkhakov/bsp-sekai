@@ -2444,34 +2444,18 @@ static void dkent_trigger_once( entity_t *ent ) {
 	SetKeyValue( ent, "classname", "trigger_multiple" );
 }
 
-static void dkent_item_health_25( entity_t *ent ) {
-	SetKeyValue( ent, "classname", "item_health" );
-}
-static void dkent_item_health_50( entity_t *ent ) {
-	SetKeyValue( ent, "classname", "item_health_large" );
-}
-static void dkent_item_goldensoul( entity_t *ent ) {
-	SetKeyValue( ent, "classname", "item_health_mega" );
-}
-static void dkent_item_plasteel_armor( entity_t *ent ) {
-	SetKeyValue( ent, "classname", "item_armor_combat" );
-}
-static void dkent_item_chromatic_armor( entity_t *ent ) {
-	SetKeyValue( ent, "classname", "item_armor_body" );
-}
-static void dkent_item_wraithorb( entity_t *ent ) {
-	SetKeyValue( ent, "classname", "item_invis" );
-}
-
 /*
 ===============================================================================
 
 ITEMS
 
-Daikatana's weapons, ammo and pickups become the Quake 3 item that plays the
-same role, and keep their own look through the "model" key (mint-arena draws
-it instead of the item's model). Health and armor models depend on the episode.
-The episode 1 items with their own dkent_item_* function above are left to it.
+Daikatana's pickups (item_*) keep their classnames: the game defines them
+(dk-restoration's def/dk_items.def) as the Quake 3 item that plays the same
+role. Where the model depends on the episode, the "model" key names the
+episode's (mint-arena draws it instead of the item's model).
+
+Weapons and ammo still become the Quake 3 item that plays the same role and
+keep their own look through the "model" key.
 
 ===============================================================================
 */
@@ -2586,6 +2570,42 @@ static qboolean dkent_item( entity_t *ent, const char *className )
 		return qtrue;
 	}
 	return qfalse;
+}
+
+/*
+================
+dkent_pickup
+
+A Daikatana pickup keeps its classname; the model of the episode where it
+depends on it, and those only for single player go.
+================
+*/
+static qboolean dkent_pickup( entity_t *ent, const char *className )
+{
+	char	model[MAX_QPATH];
+	int		i;
+
+	for ( i = 0; i < (int)( sizeof( dkItems ) / sizeof( dkItems[0] ) ); i++ ) {
+		const dkItem_t *item = &dkItems[i];
+
+		if ( Q_stricmp( className, item->dkClass ) ) {
+			continue;
+		}
+		if ( !item->q3Class ) {
+			FreeEntity( ent );
+			return qtrue;
+		}
+		if ( item->model && strchr( item->model, '%' ) ) {
+			snprintf( model, sizeof( model ), item->model, dk_episode, dk_episode );
+			SetKeyValue( ent, "model", model );
+		}
+		return qtrue;
+	}
+
+	// the ones that look the same in every episode
+	return !Q_stricmp( className, "item_health_25" ) || !Q_stricmp( className, "item_health_50" )
+		|| !Q_stricmp( className, "item_goldensoul" ) || !Q_stricmp( className, "item_plasteel_armor" )
+		|| !Q_stricmp( className, "item_chromatic_armor" ) || !Q_stricmp( className, "item_wraithorb" );
 }
 
 static void dkent_worldspawn( const char *mapname, vec3_t worldMins, vec3_t worldMaxs, entity_t *ent )
@@ -2728,18 +2748,8 @@ static void ProcessEntity( bspFile_t *bsp, const char *mapname, vec3_t worldMins
 		*/
 	} else if (!strcmp(className, "trigger_once")) {
 		dkent_trigger_once( ent );
-	} else if (!strcmp(className, "item_health_25")) {
-		dkent_item_health_25( ent );
-	} else if (!strcmp(className, "item_health_50")) {
-		dkent_item_health_50( ent );
-	} else if (!strcmp(className, "item_goldensoul")) {
-		dkent_item_goldensoul( ent );
-	} else if (!strcmp(className, "item_plasteel_armor")) {
-		dkent_item_plasteel_armor( ent );
-	} else if (!strcmp(className, "item_chromatic_armor")) {
-		dkent_item_chromatic_armor( ent );
-	} else if (!strcmp(className, "item_wraithorb")) {
-		dkent_item_wraithorb( ent );
+	} else if (!strncmp(className, "item_", 5) && dkent_pickup( ent, className )) {
+		// kept, the game has a def for it
 	} else if (dkent_item( ent, className )) {
 		// converted or removed
 	} else {

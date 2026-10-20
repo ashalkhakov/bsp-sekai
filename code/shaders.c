@@ -280,6 +280,8 @@ static shaderSource_t *FindShaderSourceByName( const char *name ) {
 	hash = generateHashValue( source->filename, FILE_HASH_SIZE );
 	source->next = sourceHashTable[ hash ];
 	sourceHashTable[ hash ] = source;
+
+	return source;
 }
 
 static shader_t *FindShaderByName( const char *name ) {

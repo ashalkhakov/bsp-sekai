@@ -1954,6 +1954,7 @@ int ParseCsvFromMemory( const char *buffer, int bufferSize, int numFields, void 
 			cb(env, fields);
 		}
 	}
+	return 1;
 }
 
 typedef struct {

@@ -2449,20 +2449,18 @@ static void dkent_trigger_once( entity_t *ent ) {
 
 ITEMS
 
-Daikatana's pickups (item_*) keep their classnames: the game defines them
-(dk-restoration's def/dk_items.def) as the Quake 3 item that plays the same
-role. Where the model depends on the episode, the "model" key names the
-episode's (mint-arena draws it instead of the item's model).
-
-Weapons and ammo still become the Quake 3 item that plays the same role and
-keep their own look through the "model" key.
+Daikatana's pickups (item_*, weapon_*, ammo_*) keep their classnames: the
+game defines them (dk-restoration's def/*.def). Where the model depends on
+the episode, the "model" key names the episode's (mint-arena draws it
+instead of the item's model). The table's Quake 3 class is the role the
+item plays in deathmatch; the ones with none go.
 
 ===============================================================================
 */
 
 typedef struct {
 	const char	*dkClass;
-	const char	*q3Class;	// NULL: not in deathmatch, removed
+	const char	*q3Class;	// the Quake 3 item of the same role; NULL: not in deathmatch, removed
 	const char	*model;		// %d is the episode
 } dkItem_t;
 
@@ -2546,31 +2544,6 @@ static const dkItem_t dkItems[] = {
 };
 
 static int dk_episode = 1;	// from worldspawn, picks health and armor models
-
-static qboolean dkent_item( entity_t *ent, const char *className )
-{
-	char	model[MAX_QPATH];
-	int		i;
-
-	for ( i = 0; i < (int)( sizeof( dkItems ) / sizeof( dkItems[0] ) ); i++ ) {
-		const dkItem_t *item = &dkItems[i];
-
-		if ( Q_stricmp( className, item->dkClass ) ) {
-			continue;
-		}
-		if ( !item->q3Class ) {
-			FreeEntity( ent );
-			return qtrue;
-		}
-		if ( item->model ) {
-			snprintf( model, sizeof( model ), item->model, dk_episode, dk_episode );
-			SetKeyValue( ent, "model", model );
-		}
-		SetKeyValue( ent, "classname", item->q3Class );
-		return qtrue;
-	}
-	return qfalse;
-}
 
 /*
 ================
@@ -2802,10 +2775,9 @@ static void ProcessEntity( bspFile_t *bsp, const char *mapname, vec3_t worldMins
 		*/
 	} else if (!strcmp(className, "trigger_once")) {
 		dkent_trigger_once( ent );
-	} else if (!strncmp(className, "item_", 5) && dkent_pickup( ent, className )) {
-		// kept, the game has a def for it
-	} else if (dkent_item( ent, className )) {
-		// converted or removed
+	} else if ((!strncmp(className, "item_", 5) || !strncmp(className, "weapon_", 7) || !strncmp(className, "ammo_", 5))
+		&& dkent_pickup( ent, className )) {
+		// kept (the game has a def for it) or removed
 	} else {
 		// remove it
 		FreeEntity( ent );

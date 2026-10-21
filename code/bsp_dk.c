@@ -2220,6 +2220,20 @@ Damage: default is none
 	decoInfo_t *deco;
 
 	name =  ValueForKey( ent, "model" );
+
+	// mint-arena: the dead bodies are ragdolls, rigged from their poses
+	// (dk-restoration's ./dk rig): limp where they're put, from the frame's pose
+	if ( !Q_stricmp( name, "deadguy" ) ) {
+		SetKeyValue( ent, "classname", "misc_character" );
+		SetKeyValue( ent, "model", "model_dead" );
+		SetKeyValue( ent, "anim", "dead" );
+		SetKeyInteger( ent, "ragdoll", 1 );
+		if ( FloatForKey( ent, "scale" ) > 0.0f ) {
+			SetKeyFloat( ent, "modelscale", FloatForKey( ent, "scale" ) );
+		}
+		return;
+	}
+
 	deco = GetDeco( episode, name );
 	if ( deco == NULL ) {
 		Com_Printf( "WARNING: unknown deco %s in episode %d, removed\n", name, episode + 1 );

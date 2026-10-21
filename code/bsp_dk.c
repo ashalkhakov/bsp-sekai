@@ -2397,6 +2397,63 @@ static void dkent_effect_rain( entity_t *ent ) {
 	//SetKeyValue( ent, "spawnflags", "1" ); // light
 }
 
+/*
+Daikatana's func_door_rotate (dlls/world/door.cpp, flags in common.h):
+"distance" degrees about the Z axis, or ROTATE_X_AXIS (128) or ROTATE_Y_AXIS
+(256); ROTATE_START_OPEN (1), ROTATE_REVERSE (2). mint-arena's
+func_door_rotating has REVERSE at 8, X_AXIS at 32 and Y_AXIS at 64. Left
+out: DONT_LINK (4: the door isn't linked anyway, see func_door), TOGGLE (8),
+AUTO_OPEN (16: mint-arena's untargeted doors open on touch), USE_TO_CLOSE
+(32), CONTINUOUS (64), SWING (512: opening away from the player), the
+struggle sound (1024), LOOP_SOUNDS (2048), FORCEMOVE (4096).
+*/
+#define DK_ROTATE_START_OPEN	1
+#define DK_ROTATE_REVERSE		2
+#define DK_ROTATE_X_AXIS		128
+#define DK_ROTATE_Y_AXIS		256
+
+static void dkent_func_door_rotate( entity_t *ent, int entityNum ) {
+	int dkSpawnflags = IntegerForKey( ent, "spawnflags" );
+	int q3Spawnflags = dkSpawnflags & DK_ROTATE_START_OPEN;
+	char team[32];
+
+	if ( dkSpawnflags & DK_ROTATE_REVERSE ) {
+		q3Spawnflags |= 8;
+	}
+	if ( dkSpawnflags & DK_ROTATE_X_AXIS ) {
+		q3Spawnflags |= 32;
+	} else if ( dkSpawnflags & DK_ROTATE_Y_AXIS ) {
+		q3Spawnflags |= 64;
+	}
+	SetKeyValue( ent, "classname", "func_door_rotating" );
+	SetKeyInteger( ent, "spawnflags", q3Spawnflags );
+
+	// not linked with the doors it touches (see func_door)
+	sprintf( team, "door%d", entityNum );
+	SetKeyValue( ent, "team", team );
+	AppendKeyValueMatching( ent, "sound_", "sounds/" );
+}
+
+/*
+Daikatana's path_corner_train (door.cpp) is the corner of a func_train:
+"speed" to the next one, "wait", "pathtarget" used on arrival, and
+WAITFORTRIGGER (8), where the train stops until used again: mint-arena's
+"wait" "-1". Its "sound" plays as the train leaves it, "sound_stop" as one
+gets there. Left out: the X/Y/Z_AXIS rotations (1, 2, 4), MULTI_PATH (16),
+TELEPORT (32).
+*/
+#define DK_TRAIN_WAITFORTRIGGER		8
+#define DK_FUNC_TRAIN_START_ON		0x80
+
+static void dkent_path_corner_train( entity_t *ent ) {
+	SetKeyValue( ent, "classname", "path_corner" );
+	if ( IntegerForKey( ent, "spawnflags" ) & DK_TRAIN_WAITFORTRIGGER ) {
+		SetKeyValue( ent, "wait", "-1" );
+	}
+	SetKeyValue( ent, "spawnflags", "0" );
+	AppendKeyValueMatching( ent, "sound", "sounds/" );
+}
+
 static void dkent_func_rotate( entity_t *ent ) {
 	epair_t pairs[] = {
 		{ NULL, "dmg", "damage" }
@@ -2720,10 +2777,10 @@ static const char *dkSinglePlayerClasses[] = {
 	"trigger_changetarget", "trigger_setskill", "trigger_fog_value", "trigger_change_sfx",
 	"target_crosslevel_trigger", "target_crosslevel_target", "target_earthquake", "target_attractor",
 	"target_monster_spawn", "target_lightramp", "target_laser", "target_spotlight", "target_effect",
-	"func_wall", "func_door_rotate", "func_door_secret", "func_event_generator", "func_plat", "func_monitor",
+	"func_wall", "func_door_secret", "func_event_generator", "func_plat", "func_monitor",
 	"func_multi_button", "func_dynalight", "func_anim", "func_debris", "func_wall_explode",
 	"info_camera", "info_player_coop", "info_superfly_start", "info_mikiko_start", "info_mikikofly_start",
-	"path_corner_train", "monster_path_corner", "misc_healthtree", "misc_hosportal", "misc_drugbox",
+	"monster_path_corner", "misc_healthtree", "misc_hosportal", "misc_drugbox",
 	"misc_fountain", "drop_monster",
 	NULL
 };
@@ -2819,8 +2876,16 @@ static void ProcessEntity( bspFile_t *bsp, const char *mapname, vec3_t worldMins
 		// keep it: water that moves like a door, the game has it
 	} else if (!strcmp(className, "func_door_rotating")) {
 		// keep it
+	} else if (!strcmp(className, "func_door_rotate")) {
+		dkent_func_door_rotate( ent, entityNum );
 	} else if (!strcmp(className, "func_train")) {
-		// keep it
+		// its "sound" loops while it moves; FUNC_TRAIN_START_ON is mint-arena's
+		// START_ON, its rotation flags are left out
+		AppendKeyValueMatching( ent, "sound", "sounds/" );
+		SetKeyValue( ent, "noise", ValueForKey( ent, "sound" ) );
+		SetKeyInteger( ent, "spawnflags", ( IntegerForKey( ent, "spawnflags" ) & DK_FUNC_TRAIN_START_ON ) ? 1 : 0 );
+	} else if (!strcmp(className, "path_corner_train")) {
+		dkent_path_corner_train( ent );
 	} else if (!strcmp(className, "path_corner")) {
 		// keep it
 	} else if (!strcmp(className, "func_rotate")) {

@@ -2231,6 +2231,11 @@ Damage: default is none
 	strcat( modelname, ".md3" );
 	SetKeyValue( ent, "model", modelname );
 
+	// Daikatana's "scale" is mint-arena's (and Quake 3's) "modelscale"
+	if ( FloatForKey( ent, "scale" ) > 0.0f ) {
+		SetKeyFloat( ent, "modelscale", FloatForKey( ent, "scale" ) );
+	}
+
 	// Daikatana gives a deco without a material of its own the one of its
 	// deco info, NO_BREAK for those that have none (STONE, say)
 	if ( !( spawnflags & ( DK_DECO_FLAGS_WOOD | DK_DECO_FLAGS_METAL | DK_DECO_FLAGS_GLASS | DK_DECO_FLAGS_GIB ) ) ) {

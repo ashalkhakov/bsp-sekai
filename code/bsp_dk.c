@@ -2565,7 +2565,8 @@ static qboolean dkent_pickup( entity_t *ent, const char *className )
 			continue;
 		}
 		if ( !item->q3Class ) {
-			FreeEntity( ent );
+			// single player's only
+			SetKeyValue( ent, "gametype", "campaign" );
 			return qtrue;
 		}
 		if ( item->model && strchr( item->model, '%' ) ) {
@@ -2678,9 +2679,61 @@ static void dkent_worldspawn( const char *mapname, vec3_t worldMins, vec3_t worl
 	SetKeyInteger( ent, "_keeplights", 1 );
 }
 
+/*
+===============================================================================
+
+SINGLE PLAYER
+
+Daikatana's single player entities keep their classnames and keys for
+mint-arena's campaign (its "campaign" gametype), which plays them; the
+deathmatch game types don't spawn them. Daikatana's "not in deathmatch"
+spawnflag becomes the same; its skill spawnflags stay for the campaign.
+
+===============================================================================
+*/
+
+#define DK_SPAWNFLAG_NOT_DEATHMATCH		0x8000		// p_user.h's, what dk_sent.cpp tests
+
+static const char *dkSinglePlayerClasses[] = {
+	"trigger_changelevel", "trigger_secret", "trigger_relay", "trigger_counter", "trigger_script",
+	"trigger_sidekick", "trigger_sidekick_stop", "trigger_sidekick_teleport", "trigger_superfly_spawn",
+	"trigger_mikiko_spawn", "trigger_remove_inventory_item", "trigger_changemusic", "trigger_toggle",
+	"trigger_changetarget", "trigger_setskill", "trigger_fog_value", "trigger_change_sfx",
+	"target_crosslevel_trigger", "target_crosslevel_target", "target_earthquake", "target_attractor",
+	"target_monster_spawn", "target_lightramp", "target_laser", "target_spotlight", "target_effect",
+	"func_wall", "func_door_rotate", "func_door_secret", "func_event_generator", "func_plat", "func_monitor",
+	"func_multi_button", "func_dynalight", "func_anim", "func_debris", "func_wall_explode",
+	"info_camera", "info_player_coop", "info_superfly_start", "info_mikiko_start", "info_mikikofly_start",
+	"path_corner_train", "monster_path_corner", "misc_healthtree", "misc_hosportal", "misc_drugbox",
+	"misc_fountain", "drop_monster",
+	NULL
+};
+
+static qboolean dkent_single_player( entity_t *ent, const char *className )
+{
+	int i;
+
+	if ( !strncmp( className, "monster_", 8 ) || !strncmp( className, "item_", 5 ) || !strncmp( className, "cine_", 5 ) ) {
+		SetKeyValue( ent, "gametype", "campaign" );
+		return qtrue;
+	}
+	for ( i = 0; dkSinglePlayerClasses[i]; i++ ) {
+		if ( !strcmp( className, dkSinglePlayerClasses[i] ) ) {
+			SetKeyValue( ent, "gametype", "campaign" );
+			return qtrue;
+		}
+	}
+	return qfalse;
+}
+
 static void ProcessEntity( bspFile_t *bsp, const char *mapname, vec3_t worldMins, vec3_t worldMaxs, int entityNum, entity_t *ent )
 {
 	const char *className = ValueForKey(ent, "classname");
+
+	if ( atoi( ValueForKey( ent, "spawnflags" ) ) & DK_SPAWNFLAG_NOT_DEATHMATCH ) {
+		// mint-arena: the campaign only
+		SetKeyValue( ent, "!gametype", "ffa tournament single team ctf oneflag obelisk harvester" );
+	}
 
 	if (!strcmp(className, "worldspawn")) {
 		dkent_worldspawn( mapname, worldMins, worldMaxs, ent );
@@ -2778,6 +2831,8 @@ static void ProcessEntity( bspFile_t *bsp, const char *mapname, vec3_t worldMins
 	} else if ((!strncmp(className, "item_", 5) || !strncmp(className, "weapon_", 7) || !strncmp(className, "ammo_", 5))
 		&& dkent_pickup( ent, className )) {
 		// kept (the game has a def for it) or removed
+	} else if ( dkent_single_player( ent, className ) ) {
+		// kept for the campaign
 	} else {
 		// remove it
 		FreeEntity( ent );

@@ -4019,7 +4019,7 @@ static int TexInfoToShaders(
 	}
 
 	Q_strncpyz( shaders[numShaders].shader, "textures/system/outside", sizeof( shaders[numShaders].shader ) );
-	shaders[numShaders].contentFlags |= JKA_CONTENTS_OUTSIDE;
+	shaders[numShaders].contentFlags = JKA_CONTENTS_OUTSIDE;
 	shaders[numShaders].surfaceFlags = 0;
 	shaders[numShaders].texinfo = NULL;
 	*outsideShaderNum = numShaders;

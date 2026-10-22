@@ -4780,6 +4780,25 @@ bspFile_t *BSP_LoadDK( const bspFormat_t *format, const char *name, const void *
 				int	brushNum = LittleLong( in->brushnum );
 				int	setShader = 0;
 
+				// the leaf's "brushnum" isn't always its fog brush (Daikatana
+				// only names the volume with it; its hull is the leaf's faces):
+				// the fog brush is the leaf's brush with fog contents
+				{
+					const unsigned short	*lb = GetLump( &header, data, LUMP_LEAFBRUSHES );
+					const realDbrush_t		*db = GetLump( &header, data, LUMP_BRUSHES );
+					int						first = LittleShort( in->firstleafbrush );
+					int						num = LittleShort( in->numleafbrushes );
+
+					for ( j = 0; j < num; j++ ) {
+						int b = LittleShort( lb[first + j] );
+
+						if ( LittleLong( db[b].contents ) & CONTENTS_FOG ) {
+							brushNum = b;
+							break;
+						}
+					}
+				}
+
 				//Com_Printf("fog brush num %d\n", brushNum);
 				for ( k = 0; k < numFogs; k++ )
 				{

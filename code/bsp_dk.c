@@ -1430,7 +1430,8 @@ static qboolean LM_AllocBlock (gllightmapstate_t *lms, int w, int h, int *x, int
 ================
 DK_VertexLit
 
-Translucent lit surfaces take their light from vertex colours.
+Translucent surfaces have no lightmap: drawn full bright, as Daikatana
+draws them; their vertex colours (from the lightmap) are for r_vertexLight.
 ================
 */
 static qboolean DK_VertexLit( const mtexinfo_t *tex ) {

@@ -684,7 +684,9 @@ static void fprint_shader( FILE *fp, shader_t *shader ) {
 			fprintf( fp, "\t\ttcMod turb 0 0.062500 0 0.159155\n" );
 		}
 		if ( shader->simplifiedShaderParms.vertexLit ) {
-			fprintf( fp, "\t\trgbGen exactVertex\n" );
+			// full bright, as Quake 2's and Daikatana's renderers draw
+			// translucent faces (R_DrawAlphaSurfaces), not by their lightmap
+			fprintf( fp, "\t\trgbGen identityLighting\n" );
 		}
 		if ( shader->simplifiedShaderParms.texScroll[0] || shader->simplifiedShaderParms.texScroll[1] ) {
 			fprintf( fp, "\t\ttcMod scroll %f %f\n", shader->simplifiedShaderParms.texScroll[0], shader->simplifiedShaderParms.texScroll[1] );

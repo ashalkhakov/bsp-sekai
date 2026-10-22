@@ -2805,7 +2805,7 @@ static const char *dkSinglePlayerClasses[] = {
 	"func_multi_button", "func_dynalight", "func_anim", "func_debris", "func_wall_explode",
 	"info_camera", "info_player_coop", "info_superfly_start", "info_mikiko_start", "info_mikikofly_start",
 	"monster_path_corner", "misc_healthtree", "misc_hosportal", "misc_drugbox",
-	"misc_fountain", "drop_monster",
+	"misc_fountain", "drop_monster", "effect_lightning", "info_aiscript",
 	NULL
 };
 
@@ -2958,6 +2958,26 @@ static void ConvertEntityString(const char *mapname, bspFile_t *bsp, const void 
 	}
 
 	CopyLump( header, LUMP_ENTITIES, data, mapEntityString, mapEntityStringSize, qfalse ); /* NO SWAP */	
+
+	// Daikatana loads maps/<map>.ent in place of the map's own entities, when
+	// there is one: its later edits (e1m1b's info_aiscript)
+	{
+		char qpath[MAX_QPATH];
+		void *ent = NULL;
+		int length;
+
+		snprintf( qpath, sizeof( qpath ), "maps/%s.ent", mapname );
+		length = FS_ReadFile( qpath, &ent );
+
+		if ( length > 0 && length < MAX_MAP_ENTSTRING ) {
+			memcpy( mapEntityString, ent, length );
+			mapEntityString[length] = '\0';
+			mapEntityStringSize = length + 1;
+		}
+		if ( ent ) {
+			FS_FreeFile( ent );
+		}
+	}
 
 	// dump the entities next to the output for debugging, if the directory exists
 	{

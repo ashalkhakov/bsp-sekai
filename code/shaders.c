@@ -588,6 +588,9 @@ static void fprint_shader( FILE *fp, shader_t *shader ) {
 			fprintf( fp, "surfaceparm trans\nsurfaceparm nonsolid\nsurfaceparm fog\nsurfaceparm nolightmap\n" );
 			fprintf( fp, "fogparms ( %f %f %f ) %f\n",
 				shader->fogParms[0], shader->fogParms[1], shader->fogParms[2], shader->fogParms[3] );
+			// Daikatana's fog volumes are fogged through their hull, from
+			// inside or out, as Doom 3's fog lights (Spearmint's renderergl2)
+			fprintf( fp, "fogLight\n" );
 		}
 		break;
 	case ST_SKY:

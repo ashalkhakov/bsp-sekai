@@ -3201,9 +3201,12 @@ static void OutputGeneratedFogShaders( mfog_t *fogs, int numFogs )
 		float	color[3];
 		float	distance;
 
-		color[0] = ( float )( fog->texinfo->color[0] ) / 255.0;
-		color[1] = ( float )( fog->texinfo->color[1] ) / 255.0;
-		color[2] = ( float )( fog->texinfo->color[2] ) / 255.0;
+		// Daikatana's fog volumes show about a fifth as bright as their
+		// colour (the e1m1b swamp's mist, measured in its screenshots: its
+		// fog pass modulates the colour by whatever texture is bound)
+		color[0] = 0.2f * ( float )( fog->texinfo->color[0] ) / 255.0;
+		color[1] = 0.2f * ( float )( fog->texinfo->color[1] ) / 255.0;
+		color[2] = 0.2f * ( float )( fog->texinfo->color[2] ) / 255.0;
 
 		distance = fog->texinfo->value;
 		if( distance == 0 )

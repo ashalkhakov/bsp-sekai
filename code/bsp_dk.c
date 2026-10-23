@@ -2321,13 +2321,13 @@ Damage: default is none
 		// Daikatana's box, for a model the game can't make a hull of
 		SetVectorForKey( ent, "mins", deco->mins );
 		SetVectorForKey( ent, "maxs", deco->maxs );
-		// static scenery: what doesn't move, and what Daikatana drops but
-		// never turns (a toss deco falls on its box, upright: the intro's
-		// Mishima pod stands by a wall it would topple off as a body), unless
-		// the player can push it
-		if ( deco->moveType == MOVETYPE_NONE
-				|| ( deco->moveType == MOVETYPE_TOSS && !( spawnflags & DK_DECO_FLAGS_PUSHABLE ) ) ) {
+		if ( deco->moveType == MOVETYPE_NONE ) {
 			SetKeyInteger( ent, "static", 1 );
+		} else if ( deco->moveType == MOVETYPE_TOSS ) {
+			// Daikatana drops it on its box, which never turns: upright (the
+			// intro's Mishima pod stands by a wall it would topple off as a
+			// body that turns)
+			SetKeyInteger( ent, "upright", 1 );
 		}
 
 		// breakable as in SpawnDeco: a material or exploding, and not NO_BREAK
@@ -3997,8 +3997,13 @@ static int TexInfoToShaders(
 			shaderParms.lightmapped = qtrue;
 		}
 		// Daikatana 1.3's glow map beside the texture: a shader of its own,
-		// to draw it (DefineSimplifiedShader's)
+		// to draw it (DefineSimplifiedShader's); for that alone, a wall as
+		// any other, its front drawn ("cull back" draws the back: e1m1a's
+		// secret room had holes)
 		if ( DK_HasGlow( texinfo->image->name ) ) {
+			if ( !specialShading ) {
+				shaderParms.cull = CT_FRONT;
+			}
 			specialShading = qtrue;
 		}
 

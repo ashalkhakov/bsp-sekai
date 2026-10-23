@@ -1428,6 +1428,41 @@ static qboolean LM_AllocBlock (gllightmapstate_t *lms, int w, int h, int *x, int
 
 /*
 ================
+DK_ModelIsTall
+
+an MD3 (from the game's data folder) taller than 1.5 times it's wide, by its
+first frame's bounds (Daikatana's deco boxes are rough: a pillow's is 25 tall)
+================
+*/
+static qboolean DK_ModelIsTall( const char *path ) {
+	unsigned char	header[108], frame[24];
+	float			b[6];
+	int				ofsFrames, i;
+	FILE			*f;
+
+	f = fopen( path, "rb" );
+	if ( !f ) {
+		return qfalse;
+	}
+	if ( fread( header, 1, sizeof( header ), f ) != sizeof( header ) || memcmp( header, "IDP3", 4 ) ) {
+		fclose( f );
+		return qfalse;
+	}
+	memcpy( &ofsFrames, header + 92, 4 );
+	if ( fseek( f, LittleLong( ofsFrames ), SEEK_SET ) || fread( frame, 1, sizeof( frame ), f ) != sizeof( frame ) ) {
+		fclose( f );
+		return qfalse;
+	}
+	fclose( f );
+	for ( i = 0; i < 6; i++ ) {
+		memcpy( &b[i], frame + 4 * i, 4 );
+		b[i] = LittleFloat( b[i] );
+	}
+	return b[5] - b[2] > 1.5f * MAX( b[3] - b[0], b[4] - b[1] );
+}
+
+/*
+================
 DK_HasGlow
 
 Daikatana 1.3's glow map for a texture: <texture>_glow.tga beside it (the
@@ -2323,10 +2358,10 @@ Damage: default is none
 		SetVectorForKey( ent, "maxs", deco->maxs );
 		if ( deco->moveType == MOVETYPE_NONE ) {
 			SetKeyInteger( ent, "static", 1 );
-		} else if ( deco->moveType == MOVETYPE_TOSS ) {
-			// Daikatana drops it on its box, which never turns: upright (the
-			// intro's Mishima pod stands by a wall it would topple off as a
-			// body that turns)
+		} else if ( deco->moveType == MOVETYPE_TOSS && DK_ModelIsTall( modelname ) ) {
+			// a tall one Daikatana drops on its box, which never turns, upright
+			// (the intro's Mishima pod would topple off its wall); a flat one
+			// (a pillow, books) a body as any, settling as it lands
 			SetKeyInteger( ent, "upright", 1 );
 		}
 
@@ -3978,9 +4013,12 @@ static int TexInfoToShaders(
 			shaderParms.cull = CT_NONE;
 			specialShading = qtrue;
 		} else {
+			// opaque: a wall as any other, its front drawn ("cull back"
+			// draws only the back: the intro's Mishima Burger banner, full
+			// bright, was a hole from below)
 			shaderParms.blend = BT_NONE;
 			shaderParms.alphaGenConst = 1.0f;
-			shaderParms.cull = CT_BACK;
+			shaderParms.cull = CT_FRONT;
 		}
 
 		// warping liquids are lit like the rest in Daikatana: opaque ones by
@@ -3997,13 +4035,8 @@ static int TexInfoToShaders(
 			shaderParms.lightmapped = qtrue;
 		}
 		// Daikatana 1.3's glow map beside the texture: a shader of its own,
-		// to draw it (DefineSimplifiedShader's); for that alone, a wall as
-		// any other, its front drawn ("cull back" draws the back: e1m1a's
-		// secret room had holes)
+		// to draw it (DefineSimplifiedShader's)
 		if ( DK_HasGlow( texinfo->image->name ) ) {
-			if ( !specialShading ) {
-				shaderParms.cull = CT_FRONT;
-			}
 			specialShading = qtrue;
 		}
 

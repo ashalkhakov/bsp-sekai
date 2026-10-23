@@ -1428,6 +1428,33 @@ static qboolean LM_AllocBlock (gllightmapstate_t *lms, int w, int h, int *x, int
 
 /*
 ================
+DK_HasGlow
+
+Daikatana 1.3's glow map for a texture: <texture>_glow.tga beside it (the
+converter runs in the game's data folder)
+================
+*/
+static qboolean DK_HasGlow( const char *image ) {
+	char	glow[MAX_QPATH];
+	char	*dot;
+	FILE	*f;
+
+	Q_strncpyz( glow, image, sizeof( glow ) );
+	dot = strrchr( glow, '.' );
+	if ( dot && dot > strrchr( glow, '/' ) ) {
+		*dot = 0;
+	}
+	strncat( glow, "_glow.tga", sizeof( glow ) - strlen( glow ) - 1 );
+	f = fopen( glow, "rb" );
+	if ( !f ) {
+		return qfalse;
+	}
+	fclose( f );
+	return qtrue;
+}
+
+/*
+================
 DK_VertexLit
 
 Translucent surfaces have no lightmap: drawn full bright, as Daikatana
@@ -2294,7 +2321,12 @@ Damage: default is none
 		// Daikatana's box, for a model the game can't make a hull of
 		SetVectorForKey( ent, "mins", deco->mins );
 		SetVectorForKey( ent, "maxs", deco->maxs );
-		if ( deco->moveType == MOVETYPE_NONE ) {
+		// static scenery: what doesn't move, and what Daikatana drops but
+		// never turns (a toss deco falls on its box, upright: the intro's
+		// Mishima pod stands by a wall it would topple off as a body), unless
+		// the player can push it
+		if ( deco->moveType == MOVETYPE_NONE
+				|| ( deco->moveType == MOVETYPE_TOSS && !( spawnflags & DK_DECO_FLAGS_PUSHABLE ) ) ) {
 			SetKeyInteger( ent, "static", 1 );
 		}
 
@@ -3963,6 +3995,11 @@ static int TexInfoToShaders(
 			specialShading = qtrue;
 		} else {
 			shaderParms.lightmapped = qtrue;
+		}
+		// Daikatana 1.3's glow map beside the texture: a shader of its own,
+		// to draw it (DefineSimplifiedShader's)
+		if ( DK_HasGlow( texinfo->image->name ) ) {
+			specialShading = qtrue;
 		}
 
 		if ( specialShading ) {

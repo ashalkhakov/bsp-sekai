@@ -701,6 +701,32 @@ static void fprint_shader( FILE *fp, shader_t *shader ) {
 			fprintf( fp, "\t\ttcGen lightmap\n" );
 			fprintf( fp, "\t}\n" );
 		}
+		// Daikatana 1.3's glow maps (<texture>_glow.tga beside it: neon signs,
+		// lamps), added over the lit texture full bright, as it draws them
+		{
+			char glow[MAX_QPATH];
+			FILE *gf;
+
+			Q_strncpyz( glow, shader->diffuseMap, sizeof( glow ) );
+			if ( strrchr( glow, '.' ) && strrchr( glow, '.' ) > strrchr( glow, '/' ) ) {
+				*strrchr( glow, '.' ) = 0;
+			}
+			strncat( glow, "_glow.tga", sizeof( glow ) - strlen( glow ) - 1 );
+			if ( ( gf = fopen( glow, "rb" ) ) != NULL ) {
+				fclose( gf );
+				fprintf( fp, "\t{\n" );
+				fprintf( fp, "\t\tmap %s\n", glow );
+				fprintf( fp, "\t\tblendFunc add\n" );
+				if ( shader->simplifiedShaderParms.blend != BT_NONE ) {
+					fprintf( fp, "\t\tdepthFunc equal\n" );
+				}
+				fprintf( fp, "\t\trgbGen identity\n" );
+				if ( shader->simplifiedShaderParms.texScroll[0] || shader->simplifiedShaderParms.texScroll[1] ) {
+					fprintf( fp, "\t\ttcMod scroll %f %f\n", shader->simplifiedShaderParms.texScroll[0], shader->simplifiedShaderParms.texScroll[1] );
+				}
+				fprintf( fp, "\t}\n" );
+			}
+		}
 		break;
 	default:
 		break;

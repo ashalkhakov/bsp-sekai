@@ -2284,42 +2284,6 @@ Damage: default is none
 
 	name =  ValueForKey( ent, "model" );
 
-	// mint-arena: the dead bodies are ragdolls of rigged characters
-	// (dk-restoration's ./dk rig), limp from a pose of theirs: the deco's mesh
-	// is that pose, its offset from the character's origin measured (the
-	// rigged character keeps it where its own model had it). A little up, so
-	// it doesn't start in the floor
-	static const struct {
-		const char	*deco, *model, *anim;
-		float		offset[3];
-	} deadBodies[] = {
-		{ "deadguy",		"model_dead",		"dead",		{ 0, 0, 0 } },
-	};
-	for ( int b = 0; b < (int)( sizeof( deadBodies ) / sizeof( deadBodies[0] ) ); b++ ) {
-		vec3_t	origin;
-		float	yaw, s, c;
-
-		if ( Q_stricmp( name, deadBodies[b].deco ) ) {
-			continue;
-		}
-		SetKeyValue( ent, "classname", "misc_character" );
-		SetKeyValue( ent, "model", deadBodies[b].model );
-		SetKeyValue( ent, "anim", deadBodies[b].anim );
-		SetKeyInteger( ent, "ragdoll", 1 );
-		if ( FloatForKey( ent, "scale" ) > 0.0f ) {
-			SetKeyFloat( ent, "modelscale", FloatForKey( ent, "scale" ) );
-		}
-		GetVectorForKey( ent, "origin", origin );
-		yaw = FloatForKey( ent, "angle" ) * (float)M_PI / 180.0f;
-		s = sin( yaw );
-		c = cos( yaw );
-		origin[0] += c * deadBodies[b].offset[0] - s * deadBodies[b].offset[1];
-		origin[1] += s * deadBodies[b].offset[0] + c * deadBodies[b].offset[1];
-		origin[2] += deadBodies[b].offset[2];
-		SetVectorForKey( ent, "origin", origin );
-		return;
-	}
-
 	deco = GetDeco( episode, name );
 	if ( deco == NULL ) {
 		Com_Printf( "WARNING: unknown deco %s in episode %d, removed\n", name, episode + 1 );

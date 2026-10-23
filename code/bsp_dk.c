@@ -2294,7 +2294,6 @@ Damage: default is none
 		float		offset[3];
 	} deadBodies[] = {
 		{ "deadguy",		"model_dead",		"dead",		{ 0, 0, 0 } },
-		{ "deadtoshiro",	"model_toshiro",	"coffin",	{ 60.31f, -0.1f, 24.7f + 2.0f } },	// Toshiro in his coffin
 	};
 	for ( int b = 0; b < (int)( sizeof( deadBodies ) / sizeof( deadBodies[0] ) ); b++ ) {
 		vec3_t	origin;
